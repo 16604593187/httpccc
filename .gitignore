@@ -1,0 +1,16 @@
+# 忽略 CMake 生成的构建目录
+/build/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# 忽略可执行文件和目标文件
+*.o
+*.so
+*.a
+httpccc # 你的可执行文件名
+
+# 忽略 IDE 和编辑器文件 (根据你的环境)
+.vscode/
+.idea/
+*.swp
