@@ -61,7 +61,7 @@ int Socket::fd() const {
     return _sockfd;
 }
 int Socket::accept(struct sockaddr_in& client_addr){
-    memset(&client_addr,0,sizeof(client_addr));
+    memset(&client_addr,0,sizeof(client_addr));//初始化地址结构，即其值与长度
     socklen_t addr_len=sizeof(client_addr);
     int client_fd;
     if((client_fd=::accept(_sockfd, (struct sockaddr *)&client_addr, &addr_len))==-1){

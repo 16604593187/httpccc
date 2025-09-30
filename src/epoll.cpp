@@ -24,11 +24,11 @@ Epoll::~Epoll(){
     }
 }
 void Epoll::add_fd(int fd,uint32_t events){
-    epoll_event event;
-    memset(&event,0,sizeof(event));
+    epoll_event event;//创建epoll_event结构体
+    memset(&event,0,sizeof(event));//初始化event和data.fd
     event.events=events;
     event.data.fd=fd;
-    if(::epoll_ctl(_epollfd, EPOLL_CTL_ADD, fd, &event)==-1){
+    if(::epoll_ctl(_epollfd, EPOLL_CTL_ADD, fd, &event)==-1){//将socket fd添加到epoll监控列表
         std::string error_msg = "Epoll add_fd failed:" + std::string(strerror(errno));
         throw std::runtime_error(error_msg);
     }
@@ -39,7 +39,7 @@ int Epoll::wait(int timeout_ms){
     while(true){
         num_events=::epoll_wait(_epollfd, _events.data(), MAX_EVENTS, timeout_ms);
         if(num_events==-1){
-            if(errno==EINTR)continue;
+            if(errno==EINTR)continue;//如果是中断事件直接continue
             else{
                 std::string error_msg = "Epoll wait failed: " + std::string(strerror(errno));
                 throw std::runtime_error(error_msg);
