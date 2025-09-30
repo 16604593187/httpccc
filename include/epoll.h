@@ -12,6 +12,6 @@ public:
     void add_fd(int fd,uint32_t events);//将socket注册到epoll实例中
     int wait(int timeout_ms=-1);//返回等待确认的事件个数
     const std::vector<epoll_event>& get_events() const { return _events; }
-    void mod_fd(int fd,uint32_t events);
-    void del_fd(int fd);
+    void mod_fd(int fd,uint32_t events);//事件切换
+    void del_fd(int fd);//描述符移除
 };
