@@ -15,4 +15,5 @@ public:
     void bind(const std::string& ip,uint16_t port);//配置服务器地址结构，调用bind()系统调用
     void listen(int backlog);//监听
     int fd()const;
+    int accept(struct sockaddr_in& client_addr);
 };

@@ -60,3 +60,17 @@ int Socket::fd() const {
     // fd() 只是返回私有成员 _sockfd 的值
     return _sockfd;
 }
+int Socket::accept(struct sockaddr_in& client_addr){
+    memset(&client_addr,0,sizeof(client_addr));
+    socklen_t addr_len=sizeof(client_addr);
+    int client_fd;
+    if((client_fd=::accept(_sockfd, (struct sockaddr *)&client_addr, &addr_len))==-1){
+        if(errno==EAGAIN||errno==EWOULDBLOCK){
+            return -1;
+        }else{
+            std::string error_msg = "Accept failed:" + std::string(strerror(errno));
+            throw std::runtime_error(error_msg);
+        }
+    }
+    return client_fd;
+}
