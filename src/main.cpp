@@ -6,14 +6,12 @@
 #include <unistd.h>      // for close()
 #include <sys/epoll.h>   // for EPOLLIN, EPOLLET
 #include <arpa/inet.h>   // for inet_ntoa (打印IP)
-
+#include<cstring>
+#include<cerrno>
 // 定义常量
 const std::string SERVER_IP = "0.0.0.0"; 
 const uint16_t SERVER_PORT = 8080;
 const int LISTEN_BACKLOG = 1024;
-
-// 注意：main 函数中包含了新的头文件引用，请确保它们都在你的环境中可用
-
 int main() {
     // 客户端地址结构体，用于接收 accept 结果
     struct sockaddr_in client_addr; 
@@ -64,28 +62,70 @@ int main() {
                             // accept 返回 -1 (EAGAIN/EWOULDBLOCK)，表示所有排队的连接已处理完
                             break; 
                         }
-                        
+                        Socket::set_nonblocking(client_fd);//设置非阻塞状态
                         // --- 接受成功处理 ---
-                        
+                        epoll_poller.add_fd(client_fd, EPOLLIN | EPOLLET);//将客户端注册到epoll，监听可读事件与边缘触发事件
                         // 打印客户端信息
                         std::cout << "--- New connection accepted ---" << std::endl;
                         std::cout << "  Client IP: " << inet_ntoa(client_addr.sin_addr) 
                                   << ", Port: " << ntohs(client_addr.sin_port) 
                                   << ", New FD: " << client_fd << std::endl;
-                        
-                        // IMPORTANT: 新的客户端 FD 也必须设置为非阻塞
-                        // 假设我们现在直接注册客户端 FD (简单版本)
-                        // TODO: 在这里调用 fcntl(client_fd, F_SETFL, O_NONBLOCK) 
-                        // TODO: 注册 client_fd 到 Epoll：epoll_poller.add_fd(client_fd, EPOLLIN | EPOLLET);
-                        
-                        // 为了简化，我们暂时关闭连接，防止 FD 泄露，直到你实现 I/O 处理
-                        ::close(client_fd);
-                        std::cout << "--- Client FD " << client_fd << " closed temporarily. ---" << std::endl;
-
                     } // end while(true) accept loop
 
                 } // end if (listen_socket event)
-                
+                else if(event_type&EPOLLIN){
+                    while(true){
+                        char buffer[1024];
+                        ssize_t bytes_read = ::read(current_fd, buffer, sizeof(buffer));
+                        if(bytes_read==-1){
+                            if(errno==EAGAIN||errno==EWOULDBLOCK)break;
+                            else{
+                                std::cerr << "Read error on FD " << current_fd << ": " << strerror(errno) << std::endl;
+                                epoll_poller.del_fd(current_fd);
+                                ::close(current_fd);
+                                break;
+                            }
+                        }
+                        else if(bytes_read==0){
+                            std::cout << "Client closed connection on FD " << current_fd << std::endl;
+                            epoll_poller.del_fd(current_fd);
+                            ::close(current_fd);
+                            break;
+                        }
+                        else{
+                            epoll_poller.mod_fd(current_fd, EPOLLOUT | EPOLLET); 
+                            std::cout << "Read " << bytes_read << " bytes from FD " << current_fd << ": [Data Received]" << std::endl;
+
+                        }
+                    }
+                }
+                else if(event_type&EPOLLOUT){
+                    const char* message = "Echo successful: Data received and sent back.\n";
+                    size_t len = strlen(message);
+                    ssize_t bytes_written = 0;
+                    while(true){
+                        ssize_t written_now = ::write(current_fd, message + bytes_written, len - bytes_written);
+                        if(written_now==-1){
+                            if(errno==EAGAIN||errno==EWOULDBLOCK){
+                                std::cout << "Write buffer full, waiting for next EPOLLOUT." << std::endl;
+                                break;
+                            }else{
+                                std::cerr << "Write error on FD " << current_fd << ": " << strerror(errno) << std::endl;
+                                epoll_poller.del_fd(current_fd);
+                                ::close(current_fd);
+                                break;
+                            }
+                        }
+                        else{
+                            bytes_written+=written_now;
+                            if(bytes_written==len){
+                                epoll_poller.mod_fd(current_fd, EPOLLIN | EPOLLET);
+                                std::cout << "Data sent. FD " << current_fd << " switched to EPOLLIN." << std::endl;
+                                break;
+                            }
+                        }
+                    }
+                }
                 // TODO: 这里的 else if 块将用于处理客户端的 I/O 事件
             }
         }

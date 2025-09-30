@@ -9,16 +9,7 @@ Socket::Socket(){//调用socket()系统调用，创建成员
         std::string error_msg = "Socket creation failed: " + std::string(strerror(errno));
         throw std::runtime_error(error_msg);
     }
-    int vatc;//非阻塞状态设置
-    if((vatc=::fcntl(_sockfd, F_GETFL))==-1){
-        std::string error_msg = "标志获取失败: " + std::string(strerror(errno));
-        throw std::runtime_error(error_msg);
-    }
-    vatc|=O_NONBLOCK;
-    if(fcntl(_sockfd, F_SETFL, vatc)==-1){
-        std::string error_msg = "非阻塞状态设置失败: " + std::string(strerror(errno));
-        throw std::runtime_error(error_msg);
-    }
+    Socket::set_nonblocking(_sockfd);
     int opt_val=1;
     if(setsockopt(_sockfd, SOL_SOCKET, SO_REUSEADDR, &opt_val, sizeof(opt_val))==-1){//端口复用设置
         std::string error_msg = "SO_REUSEADDR setting failed: " + std::string(strerror(errno));
@@ -73,4 +64,16 @@ int Socket::accept(struct sockaddr_in& client_addr){
         }
     }
     return client_fd;
+}
+void Socket::set_nonblocking(int fd){
+    int vatc;
+    if((vatc=::fcntl(fd,F_GETFL))==-1){
+        std::string error_msg = "F_GETFL get failed:" + std::string(strerror(errno));
+        throw std::runtime_error(error_msg);
+    }
+    vatc|=O_NONBLOCK;
+    if(::fcntl(fd,F_SETFL,vatc)==-1){
+        std::string error_msg = "Nonblocking setting failed:" + std::string(strerror(errno));
+        throw std::runtime_error(error_msg);
+    }
 }

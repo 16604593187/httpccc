@@ -16,4 +16,5 @@ public:
     void listen(int backlog);//监听
     int fd()const;
     int accept(struct sockaddr_in& client_addr);
+    static void set_nonblocking(int fd);
 };

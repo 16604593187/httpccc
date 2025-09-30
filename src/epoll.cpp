@@ -50,3 +50,18 @@ int Epoll::wait(int timeout_ms){
     }
     return num_events;
 }
+void Epoll::mod_fd(int fd,uint32_t events){
+    epoll_event event;
+    memset(&event,0,sizeof(event));
+    event.events=events;
+    event.data.fd=fd;
+    if(::epoll_ctl(_epollfd,EPOLL_CTL_MOD,fd,&event)==-1){
+        std::string error_msg = "Mode_fd failed: " + std::string(strerror(errno));
+        throw std::runtime_error(error_msg);
+    }
+}
+void Epoll::del_fd(int fd){
+    if (::epoll_ctl(_epollfd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
+        std::cerr << "Warning: Epoll del_fd failed for FD " << fd << ": " << strerror(errno) << std::endl;
+    }
+}
