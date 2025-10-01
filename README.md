@@ -32,3 +32,5 @@
 ET 模式 Read：在处理客户端 Socket 的 EPOLLIN 事件时，使用了 while(true) 循环调用 read 来读取缓冲区中的所有数据，处理了 EAGAIN/EWOULDBLOCK 和连接关闭 (bytes_read == 0) 的情况。
 
 状态切换：实现了读写事件的状态切换：读取数据后将 FD 切换到 EPOLLOUT，发送数据完成后再切换回 EPOLLIN。
+
+最新优化：对创建的类做了拷贝构造禁止和拷贝赋值禁止优化。
