@@ -62,3 +62,11 @@ ssize_t Buffer::readFd(int fd,int* savedErrno){
     }
     return n;
 }
+void Buffer::retrieve(size_t len){
+    if(len>readableBytes())len=readableBytes();
+    _readIndex+=len;
+    if(_readIndex==_writeIndex){
+        _readIndex=0;
+        _writeIndex=0;
+    }
+}

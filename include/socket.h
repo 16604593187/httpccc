@@ -1,3 +1,5 @@
+#ifndef HTTPCCC_SOCKET_H
+#define HTTPCCC_SOCKET_H
 #include<sys/socket.h>
 #include<netinet/in.h>
 #include<arpa/inet.h>
@@ -21,3 +23,4 @@ public:
     int accept(struct sockaddr_in& client_addr);
     static void set_nonblocking(int fd);
 };
+#endif

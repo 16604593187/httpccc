@@ -1,37 +1,59 @@
 #include "socket.h"
-#include "epoll.h" // 引入 Epoll 类
+#include "epoll.h" 
+#include "HttpConnection.h" // 【新增】引入 HttpConnection 类
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>      // for close()
-#include <sys/epoll.h>   // for EPOLLIN, EPOLLET
-#include <arpa/inet.h>   // for inet_ntoa (打印IP)
-#include<cstring>
-#include<cerrno>
-// 定义常量
+#include <unistd.h>      
+#include <sys/epoll.h>   
+#include <arpa/inet.h>   
+#include <cstring>
+#include <cerrno>
+#include <map>           // 【新增】用于连接管理器
+#include <memory>        // 【新增】用于智能指针
+
+// 定义常量 (不变)
 const std::string SERVER_IP = "0.0.0.0"; 
 const uint16_t SERVER_PORT = 8080;
 const int LISTEN_BACKLOG = 1024;
+
 int main() {
-    // 客户端地址结构体，用于接收 accept 结果
-    struct sockaddr_in client_addr; 
-    
+    // --- 变量定义提升：确保在整个 main 作用域内可见 ---
+    Socket listen_socket; 
+    Epoll epoll_poller; 
+    std::map<int, std::shared_ptr<HttpConnection>> connections; 
+
+    // 【新增】统一的连接关闭和移除逻辑
+    auto epoll_mod_cb = [&](int fd, uint32_t events) {
+        epoll_poller.mod_fd(fd, events);
+    };
+    // 现在 Lambda 可以通过引用 [&] 安全地捕获 epoll_poller 和 connections
+    auto close_and_remove_conn = [&](int fd,uint32_t events) {
+        // 1. 从 Epoll 监控中移除
+        try {
+            epoll_poller.del_fd(fd);
+        } catch (const std::runtime_error& e) {
+            // del_fd 失败通常只打印警告
+            std::cerr << "Warning: Epoll del_fd failed for FD " << fd << ": " << e.what() << std::endl;
+        }
+
+        // 2. 从 Map 中移除 (shared_ptr 自动调用 HttpConnection 析构函数，关闭FD)
+        connections.erase(fd);
+        std::cout << "--- Connection closed and removed for FD: " << fd << " ---" << std::endl;
+    };
+
+
     try {
         // --- 1. 服务器初始化 ---
-        
-        // 创建并配置监听 Socket (自动完成非阻塞和端口复用)
-        Socket listen_socket; 
+        // 使用前面定义的 listen_socket 进行初始化
         listen_socket.bind(SERVER_IP, SERVER_PORT);
         listen_socket.listen(LISTEN_BACKLOG);
         
         std::cout << "Server initialized and listening on " << SERVER_IP << ":" 
                   << SERVER_PORT << ". FD: " << listen_socket.fd() << std::endl;
 
-        // 创建 Epoll 实例
-        Epoll epoll_poller; 
         
         // --- 2. 注册监听 Socket ---
-        
         // 注册监听 Socket 到 Epoll，监听输入事件 (EPOLLIN) 并设置为边缘触发 (EPOLLET)
         epoll_poller.add_fd(listen_socket.fd(), EPOLLIN | EPOLLET); 
         std::cout << "Listening socket registered to Epoll." << std::endl;
@@ -39,10 +61,7 @@ int main() {
         // --- 3. 事件主循环 ---
         
         while (true) {
-            // 阻塞等待事件，返回就绪事件的数量
             int num_events = epoll_poller.wait(-1); 
-            
-            // 获取就绪事件数组
             const auto& events = epoll_poller.get_events(); 
 
             for (int i = 0; i < num_events; ++i) {
@@ -54,79 +73,71 @@ int main() {
                     
                     // 边缘触发模式处理：循环调用 accept()
                     while (true) {
-                        // 调用封装好的 Socket::accept()
-                        // 客户端地址结构体在每次 accept 时都会被填充
+                        struct sockaddr_in client_addr; // 必须在这里声明
                         int client_fd = listen_socket.accept(client_addr);
                         
                         if (client_fd == -1) {
-                            // accept 返回 -1 (EAGAIN/EWOULDBLOCK)，表示所有排队的连接已处理完
-                            break; 
+                            break; // accept 返回 -1 (EAGAIN/EWOULDBLOCK)，表示连接已处理完
                         }
-                        Socket::set_nonblocking(client_fd);//设置非阻塞状态
-                        // --- 接受成功处理 ---
-                        epoll_poller.add_fd(client_fd, EPOLLIN | EPOLLET);//将客户端注册到epoll，监听可读事件与边缘触发事件
-                        // 打印客户端信息
-                        std::cout << "--- New connection accepted ---" << std::endl;
-                        std::cout << "  Client IP: " << inet_ntoa(client_addr.sin_addr) 
-                                  << ", Port: " << ntohs(client_addr.sin_port) 
-                                  << ", New FD: " << client_fd << std::endl;
+                        
+                        // 【修改】新连接处理：创建 HttpConnection 对象并注册
+                        try {
+                            
+                            // 1. 创建 HttpConnection 对象 (构造函数中已设置非阻塞)
+                            std::shared_ptr<HttpConnection> conn = std::make_shared<HttpConnection>(
+                                client_fd,
+                                epoll_mod_cb,
+                                close_and_remove_conn);
+                            
+                            // 2. 将 FD 注册到连接管理器中
+                            connections[client_fd] = conn;
+                            
+                            // 3. 将 FD 注册到 Epoll，初始只监听读事件 (EPOLLIN | EPOLLET)
+                            epoll_poller.add_fd(client_fd, EPOLLIN | EPOLLET);
+                            
+                            std::cout << "--- New connection accepted ---" << std::endl;
+                            std::cout << "  Client IP: " << inet_ntoa(client_addr.sin_addr) 
+                                      << ", Port: " << ntohs(client_addr.sin_port) 
+                                      << ", New FD: " << client_fd << std::endl;
+                        } catch (const std::exception& e) {
+                             std::cerr << "Failed to establish new connection for FD " << client_fd << ": " << e.what() << std::endl;
+                             if (client_fd >= 0) ::close(client_fd); // 确保关闭FD
+                        }
+
                     } // end while(true) accept loop
 
                 } // end if (listen_socket event)
-                else if(event_type&EPOLLIN){
-                    while(true){
-                        char buffer[1024];
-                        ssize_t bytes_read = ::read(current_fd, buffer, sizeof(buffer));
-                        if(bytes_read==-1){
-                            if(errno==EAGAIN||errno==EWOULDBLOCK)break;
-                            else{
-                                std::cerr << "Read error on FD " << current_fd << ": " << strerror(errno) << std::endl;
-                                epoll_poller.del_fd(current_fd);
-                                ::close(current_fd);
-                                break;
-                            }
-                        }
-                        else if(bytes_read==0){
-                            std::cout << "Client closed connection on FD " << current_fd << std::endl;
-                            epoll_poller.del_fd(current_fd);
-                            ::close(current_fd);
-                            break;
-                        }
-                        else{
-                            epoll_poller.mod_fd(current_fd, EPOLLOUT | EPOLLET); 
-                            std::cout << "Read " << bytes_read << " bytes from FD " << current_fd << ": [Data Received]" << std::endl;
+                else { 
+                    // 【修改】处理客户端 I/O 事件
+                    auto it = connections.find(current_fd);
+                    if (it == connections.end()) {
+                        // 理论上不应发生，但如果Epoll报告了Map中没有的FD，进行清理
+                        std::cerr << "Warning: Event reported for unknown FD " << current_fd << ". Attempting Epoll cleanup." << std::endl;
+                        close_and_remove_conn(current_fd,0); // 清理Epoll和Map
+                        continue;
+                    }
+                    
+                    std::shared_ptr<HttpConnection> conn = it->second;
 
-                        }
+                    // 1. 事件分发
+                    if (event_type & EPOLLIN) {
+                        conn->handleRead();
                     }
-                }
-                else if(event_type&EPOLLOUT){
-                    const char* message = "Echo successful: Data received and sent back.\n";
-                    size_t len = strlen(message);
-                    ssize_t bytes_written = 0;
-                    while(true){
-                        ssize_t written_now = ::write(current_fd, message + bytes_written, len - bytes_written);
-                        if(written_now==-1){
-                            if(errno==EAGAIN||errno==EWOULDBLOCK){
-                                std::cout << "Write buffer full, waiting for next EPOLLOUT." << std::endl;
-                                break;
-                            }else{
-                                std::cerr << "Write error on FD " << current_fd << ": " << strerror(errno) << std::endl;
-                                epoll_poller.del_fd(current_fd);
-                                ::close(current_fd);
-                                break;
-                            }
-                        }
-                        else{
-                            bytes_written+=written_now;
-                            if(bytes_written==len){
-                                epoll_poller.mod_fd(current_fd, EPOLLIN | EPOLLET);
-                                std::cout << "Data sent. FD " << current_fd << " switched to EPOLLIN." << std::endl;
-                                break;
-                            }
-                        }
+                    if (event_type & EPOLLOUT) {
+                        conn->handleWrite();
                     }
-                }
-                // TODO: 这里的 else if 块将用于处理客户端的 I/O 事件
+                    
+                    // 2. 清理已关闭的连接
+                    // HttpConnection::handleClose() 在关闭 FD 后，将 _clientFd 设为 -1
+                    if (conn->fd() < 0) { 
+                        // close_and_remove_conn 会负责调用 epoll_poller.del_fd
+                        close_and_remove_conn(current_fd,0); 
+                    } else {
+                        // 【下一步需完善：事件切换】
+                        // 现在我们需要让 HttpConnection 能够调用 epoll_poller.mod_fd
+                        // 这将是我们下一步实现协议解析的关键控制逻辑。
+                    }
+                } // end else (client event dispatch)
             }
         }
 

@@ -1,3 +1,5 @@
+#ifndef HTTPCCC_EPOLL_H // 【新增：检查是否已定义】
+#define HTTPCCC_EPOLL_H // 【新增：如果未定义，则定义】
 #include<sys/epoll.h>
 #include<unistd.h>
 #include<vector>
@@ -17,3 +19,4 @@ public:
     void mod_fd(int fd,uint32_t events);//事件切换
     void del_fd(int fd);//描述符移除
 };
+#endif

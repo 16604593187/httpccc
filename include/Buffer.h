@@ -1,3 +1,5 @@
+#ifndef HTTPCCC_BUFFER_H // 【新增：检查是否已定义】
+#define HTTPCCC_BUFFER_H // 【新增：如果未定义，则定义】
 #include<vector>
 #include<string>
 #include<unistd.h>
@@ -20,3 +22,4 @@ public:
     size_t prependableBytes() const { return _readIndex; }
     void append(const char* data,size_t len);
 };
+#endif
