@@ -7,7 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(MY_PROJECT_SOURCE
     src/main.cpp
     src/socket.cpp
-    src/epoll.cpp)
+    src/epoll.cpp
+    src/Buffer.cpp)
 add_executable(MyProjectExec ${MY_PROJECT_SOURCE})
 target_include_directories(MyProjectExec
     PRIVATE
