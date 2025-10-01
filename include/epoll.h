@@ -8,6 +8,8 @@ private:
     static const int MAX_EVENTS=1024;//限定_events最大值
 public:
     Epoll();
+    Epoll(const Epoll&)=delete;
+    Epoll &operator=(const Epoll&)=delete;
     ~Epoll();
     void add_fd(int fd,uint32_t events);//将socket注册到epoll实例中
     int wait(int timeout_ms=-1);//返回等待确认的事件个数
