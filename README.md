@@ -24,8 +24,14 @@
 事件操作：实现了 add_fd、mod_fd 和 del_fd，用于管理 Epoll 监控列表。
 
 事件等待：实现了 wait 方法，正确处理了 EINTR 中断事件。
+4. #### Buffer封装 (Buffer类)
+获取缓冲区中已读位置
+获取缓冲区中已写位置
+获取缓冲区中可写位置
+ 动态扩增缓冲区
+ 将fd写入缓冲区中
 
-4. #### 主循环逻辑 (main.cpp)
+5. #### 主循环逻辑 (main.cpp)
 
   ET 模式 Accept：在处理监听 Socket 上的 EPOLLIN 事件时，使用了 while(true) 循环调用 accept 来处理所有排队的连接，这是 Epoll ET 模式下的标准做法。
 
