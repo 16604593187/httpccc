@@ -12,8 +12,8 @@ size_t Buffer::writableBytes() const{
     return _buffer.size()-_writeIndex;
 }
 void Buffer::ensureWritableBytes(size_t len){
-    if(writableBytes()>=len)return;
-    if(writableBytes()+prependableBytes()>=len){
+    if(writableBytes()>=len)return;//判断逻辑1
+    if(writableBytes()+prependableBytes()>=len){//判断逻辑2
         char* read_ptr = begin() + _readIndex;
         char* write_ptr=begin()+_writeIndex;
         char* dest_ptr=begin();
@@ -22,7 +22,7 @@ void Buffer::ensureWritableBytes(size_t len){
         _readIndex=0;
         _writeIndex=readable;
     }
-    else{
+    else{//判断逻辑3
         size_t _capacity=_writeIndex+len;
         _buffer.resize(_capacity);
     }

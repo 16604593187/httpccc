@@ -12,6 +12,8 @@
 #include<string>
 #include<functional>
 #include "epoll.h"
+#include "HttpRequest.h"
+#include "HttpResponse.h"
 using EpollCallback = std::function<void(int fd, uint32_t events)>; //接受fd和新的epoll事件类型
 class HttpConnection:public std::enable_shared_from_this<HttpConnection>{
 private:
@@ -22,6 +24,9 @@ private:
     EpollCallback _mod_callback;
     EpollCallback _close_callback;
     void updateEvents(uint32_t events);
+    HttpRequest _httpRequest;
+    HttpResponse _httpResponse;
+    HttpRequestParseState _httpRPS;
 public:
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();

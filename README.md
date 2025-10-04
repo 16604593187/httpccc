@@ -1,13 +1,12 @@
 ### 当前已实现功能
 
-
-1. #### 基础框架与工具
+#### 1.基础框架与工具
 
   项目初始化：设置了 C++23 标准的 CMake 构建系统，并创建了 .gitignore 文件。
 
-错误处理：在 Socket 和 Epoll 类中使用了 C++ 异常 (std::runtime_error) 来报告系统调用错误，提升了代码的健壮性。
+ 错误处理：在 Socket 和 Epoll 类中使用了 C++ 异常 (std::runtime_error) 来报告系统调用错误，提升了代码的健壮性。
 
-2. #### Socket 封装 (Socket 类)
+#### 2.Socket 封装 (Socket 类)
 
   RAII 实现：使用 Socket 类封装了文件描述符 (_sockfd)，并在析构函数中自动调用 close()，实现了资源获取即初始化 (RAII)。
 
@@ -17,21 +16,24 @@
 
 非阻塞 Accept：实现了 accept 方法，并正确处理了非阻塞模式下的 EAGAIN/EWOULDBLOCK 错误。
 
-3. #### Epoll 封装 (Epoll 类)
+#### 3.Epoll 封装 (Epoll 类)
 
   Epoll 实例管理：使用 Epoll 类封装了 epoll_create1() 调用，并在析构函数中关闭 Epoll 文件描述符。
 
 事件操作：实现了 add_fd、mod_fd 和 del_fd，用于管理 Epoll 监控列表。
 
 事件等待：实现了 wait 方法，正确处理了 EINTR 中断事件。
-4. #### Buffer封装 (Buffer类)
+#### 4.Buffer封装(Buffer类)
+
 获取缓冲区中已读位置
 获取缓冲区中已写位置
 获取缓冲区中可写位置
  动态扩增缓冲区
  将fd写入缓冲区中
 
-5. #### 主循环逻辑 (main.cpp)
+
+
+#### 5.主循环逻辑 (main.cpp)
 
   ET 模式 Accept：在处理监听 Socket 上的 EPOLLIN 事件时，使用了 while(true) 循环调用 accept 来处理所有排队的连接，这是 Epoll ET 模式下的标准做法。
 
@@ -39,4 +41,5 @@ ET 模式 Read：在处理客户端 Socket 的 EPOLLIN 事件时，使用了 whi
 
 状态切换：实现了读写事件的状态切换：读取数据后将 FD 切换到 EPOLLOUT，发送数据完成后再切换回 EPOLLIN。
 
-最新优化：对创建的类做了拷贝构造禁止和拷贝赋值禁止优化。
+#### 6.HttpConnection封装(HttpConnection类)
+

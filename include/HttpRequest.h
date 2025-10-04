@@ -14,7 +14,13 @@ enum class HttpMethod {
 enum class HttpVersion {
     kHttp10, kHttp11, kUnknown
 };
-
+enum class HttpRequestParseState{
+    kExpectRequestLine,//期待解析请求行
+    kExpectHeaders,//期待解析header字段
+    kExpectBody,//期待解析body
+    kGotAll,//已经完整解析一个请求
+    kParseError//解析过程中发生错误
+};
 class HttpRequest {
 private:
     HttpMethod _method;
