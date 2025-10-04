@@ -20,13 +20,20 @@ private:
     int _clientFd;
     Buffer _inBuffer;//读缓冲区
     Buffer _outBuffer;//写缓冲区
+
     void closeConnection();
     EpollCallback _mod_callback;
     EpollCallback _close_callback;
     void updateEvents(uint32_t events);
+
     HttpRequest _httpRequest;
     HttpResponse _httpResponse;
     HttpRequestParseState _httpRPS;
+
+    bool parseRequest();//负责解析并更新_httpRPS状态
+    bool parseRequestLine(const std::string& line);
+    bool parseHeaderLine(const std::string& line);
+    void processRequest();//负责处理请求并生成响应
 public:
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();

@@ -46,6 +46,7 @@ public:
     
     // --- 状态获取方法 ---
     HttpMethod getMethod() const { return _method; }
+    HttpVersion getVersion()const {return _version;}
     const std::string& getPath() const { return _path; }
     const std::string& getHeader(const std::string& field) const;
     bool hasHeader(const std::string& field) const;

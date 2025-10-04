@@ -22,5 +22,7 @@ public:
     const char* begin() const { return _buffer.data(); }
     size_t prependableBytes() const { return _readIndex; }
     void append(const char* data,size_t len);//调用ensureWritableBytes并且更新_writeIndex
+    const char* findCRLF() const;//查找CRLF
+    const char* findCRLF(const char* start) const;//查找指定范围内的CRLF
 };
 #endif

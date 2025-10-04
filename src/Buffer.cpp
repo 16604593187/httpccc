@@ -70,3 +70,15 @@ void Buffer::retrieve(size_t len){
         _writeIndex=0;
     }
 }
+const char CRLF[]="\r\n";
+const char* Buffer::findCRLF() const {
+    const char* read_ptr=begin()+_readIndex;
+    return findCRLF(read_ptr);
+}
+const char* Buffer::findCRLF(const char* start) const{
+    const char* end_ptr=begin()+_writeIndex;
+    if(start>=end_ptr)return nullptr;
+    const char* result=std::search(start,end_ptr,CRLF,CRLF+2);
+    if(result==end_ptr)return nullptr;
+    return result;
+}

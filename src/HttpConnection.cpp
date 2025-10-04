@@ -1,5 +1,5 @@
 #include "HttpConnection.h"
-
+#include<sstream>
 HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)){
     if(_clientFd<0){
         throw std::runtime_error("Invalid file descriptor passed to HttpConnection.");
@@ -22,10 +22,24 @@ void HttpConnection::handleRead(){
     int savedErrno=0;
     ssize_t n=_inBuffer.readFd(_clientFd,&savedErrno);
     if(n>0){
-        ssize_t readable=_inBuffer.readableBytes();
-        const char* data_ptr=_inBuffer.begin()+_inBuffer.prependableBytes();
-        _outBuffer.append(data_ptr,readable);
-        _inBuffer.retrieve(readable);
+        bool parse_result=true;
+
+        while(_httpRPS!=HttpRequestParseState::kGotAll&& _inBuffer.readableBytes() > 0){
+            //使用状态机解析_inBuffer中的数据
+            if(!parseRequest()){//解析失败
+                _httpRPS=HttpRequestParseState::kParseError;
+                parse_result=false;
+                break;
+            }  
+        }
+        if(_httpRPS==HttpRequestParseState::kGotAll){//完整的协议请求已解析
+                processRequest();
+        }
+        if(_httpRPS==HttpRequestParseState::kParseError){//解析失败，关闭连接
+            std::cerr << "Request parse error on FD " << _clientFd << std::endl;
+            handleClose();
+            return ;
+        }
         if(_outBuffer.readableBytes()>0){
             updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
         }
@@ -72,4 +86,165 @@ void HttpConnection::updateEvents(uint32_t events){
     if(_mod_callback){
         _mod_callback(_clientFd,events);
     }
+}
+void HttpRequest::addHeader(const std::string& field,const std::string& value){
+    _headers[field]=value;
+}
+const std::string& HttpRequest::getHeader(const std::string& field) const{
+    static const std::string empty;
+    auto it =_headers.find(field);
+    if(it==_headers.end()){
+        return empty;
+    }
+    return it->second;
+}
+bool HttpRequest::hasHeader(const std::string& field) const {
+    return _headers.count(field)>0;
+}
+void HttpRequest::reset(){
+    _method=HttpMethod::kUnknown;
+    _version=HttpVersion::kUnknown;
+    _path.clear();
+    _query.clear();
+    _headers.clear();
+    _body.clear();
+}
+bool HttpRequest::isParsedCompletely()const{
+    return _method!=HttpMethod::kUnknown&&_version!=HttpVersion::kUnknown;
+}
+HttpMethod stringToHttpMethod(const std::string& method_str) {
+    if (method_str == "GET") return HttpMethod::kGet;
+    if (method_str == "POST") return HttpMethod::kPost;
+    if (method_str == "HEAD") return HttpMethod::kHead;
+    if (method_str == "PUT") return HttpMethod::kPut;
+    if (method_str == "DELETE") return HttpMethod::kDelete;
+    return HttpMethod::kUnknown;
+}
+HttpVersion stringToHttpVersion(const std::string& version_str) {
+    if (version_str == "HTTP/1.1") return HttpVersion::kHttp11;
+    if (version_str == "HTTP/1.0") return HttpVersion::kHttp10;
+    return HttpVersion::kUnknown;
+}
+bool HttpConnection::parseRequestLine(const std::string& line) {
+    std::stringstream ss(line);
+    std::string method_str, uri, version_str;
+    
+    // 尝试读取三个部分：Method, URI, Version
+    if (!(ss >> method_str >> uri >> version_str)) {
+        return false; // 读取失败 (格式不正确)
+    }
+
+    // 1. 解析 Method
+    _httpRequest.setMethod(stringToHttpMethod(method_str));
+    if (_httpRequest.getMethod() == HttpMethod::kUnknown) {
+        return false; // 不支持的 Method
+    }
+
+    // 2. 解析 Version
+    _httpRequest.setVersion(stringToHttpVersion(version_str));
+    if (_httpRequest.getVersion() == HttpVersion::kUnknown) {
+        return false; // 不支持的 Version
+    }
+    
+    // 3. 解析 URI (并分离 Path 和 Query)
+    size_t query_pos = uri.find('?');
+    if (query_pos != std::string::npos) {
+        _httpRequest.setPath(uri.substr(0, query_pos));
+        // 这里只是简单存储，实际 Query 参数的键值对解析可以后续处理
+        // _httpRequest.setQuery(uri.substr(query_pos + 1)); 
+    } else {
+        _httpRequest.setPath(uri);
+    }
+
+    // 格式检查通过
+    return true; 
+}
+
+bool HttpConnection::parseRequest() {
+    bool ok = true;
+    bool hasMore = true; 
+
+    while (_httpRPS != HttpRequestParseState::kGotAll && hasMore) {
+        if (_httpRPS == HttpRequestParseState::kExpectRequestLine) {
+            const char* crlf = _inBuffer.findCRLF();
+            
+            if (crlf) {
+                // 找到了完整的请求行 (\r\n)
+                const char* begin_read = _inBuffer.begin() + _inBuffer.prependableBytes();
+                
+                // 1. 提取请求行 (不包含 \r\n)
+                std::string line(begin_read, crlf); 
+                
+                // 2. 尝试解析请求行
+                ok = parseRequestLine(line);
+                
+                // 3. 消耗缓冲区中的数据 (请求行 + \r\n)
+                size_t line_length = crlf - begin_read;
+                _inBuffer.retrieve(line_length + 2); 
+
+                if (ok) {
+                    _httpRPS = HttpRequestParseState::kExpectHeaders; // 成功，进入下一状态
+                } else {
+                    _httpRPS = HttpRequestParseState::kParseError; // 格式错误
+                }
+            } else {
+                // 没有找到完整的请求行 (\r\n)，数据不完整，等待下一次读取
+                hasMore = false; 
+            }
+        } 
+        else if (_httpRPS == HttpRequestParseState::kExpectHeaders) {
+            // TODO: 实现 Header 解析 (下一步)
+            // 暂时跳过，以便测试请求行解析
+            _httpRPS = HttpRequestParseState::kGotAll; 
+            hasMore = false;
+        }
+        else if (_httpRPS == HttpRequestParseState::kExpectBody) {
+            // TODO: 实现 Body 解析
+            _httpRPS = HttpRequestParseState::kGotAll; 
+            hasMore = false;
+        }
+        else {
+            hasMore = false;
+        }
+
+        if (!ok) {
+            return false; // 格式错误，中断并返回失败
+        }
+    }
+    return true; // 解析流程正常
+}
+
+// 【新增】processRequest 框架 (负责业务逻辑)
+void HttpConnection::processRequest() {
+    // 这是一个临时的业务逻辑，用于测试解析是否成功
+    if (_httpRequest.getMethod() == HttpMethod::kGet) {
+        std::cout << "Received GET request for path: " << _httpRequest.getPath() << std::endl;
+        
+        // 临时的响应生成：返回一个简单的 200 OK
+        _httpResponse.setStatusCode(200, "OK");
+        _httpResponse.setBody("Hello from your C++ HTTP Server!");
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpResponse.setHeader("Connection", _httpRequest.hasHeader("Connection") && _httpRequest.getHeader("Connection") == "keep-alive" ? "keep-alive" : "close");
+        
+        // 将响应序列化到 _outBuffer
+        // 注意：这需要 HttpResponse::appendToBuffer 的实现 (后续步骤)
+        // 暂时简单地将响应主体放入 _outBuffer
+        // _outBuffer.append(_httpResponse.getBody().data(), _httpResponse.getBody().size());
+        
+        // 确保下一个请求能继续处理 (如果支持长连接)
+        _httpRequest.reset();
+        _httpRPS = HttpRequestParseState::kExpectRequestLine;
+    } else {
+        // 其他 Method，返回 405
+        _httpResponse.setStatusCode(405, "Method Not Allowed");
+        _httpResponse.setBody("Method not supported.");
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpRequest.reset();
+        _httpRPS = HttpRequestParseState::kExpectRequestLine;
+    }
+    
+    // ⚠️ 此时我们需要实现 HttpResponse::appendToBuffer
+    // 由于我们还没有实现它，我们暂时跳过这里，但要确保 updateEvents 被调用
+    // 为了让代码能编译，我们暂时使用一个简单的桩函数来调用 updateEvents
+    updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
 }
