@@ -9,7 +9,8 @@ set(MY_PROJECT_SOURCE
     src/socket.cpp
     src/epoll.cpp
     src/Buffer.cpp
-    src/HttpConnection.cpp)
+    src/HttpConnection.cpp
+    )
 add_executable(MyProjectExec ${MY_PROJECT_SOURCE})
 target_include_directories(MyProjectExec
     PRIVATE

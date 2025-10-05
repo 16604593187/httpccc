@@ -34,6 +34,8 @@ private:
     bool parseRequestLine(const std::string& line);
     bool parseHeaderLine(const std::string& line);
     void processRequest();//负责处理请求并生成响应
+    bool shouldHaveBody()const;
+    std::string trim(const std::string& str);
 public:
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();

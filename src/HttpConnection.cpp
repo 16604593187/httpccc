@@ -1,5 +1,8 @@
 #include "HttpConnection.h"
 #include<sstream>
+#include<string>
+#include<algorithm>
+#include<cctype>
 HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)){
     if(_clientFd<0){
         throw std::runtime_error("Invalid file descriptor passed to HttpConnection.");
@@ -159,7 +162,23 @@ bool HttpConnection::parseRequestLine(const std::string& line) {
     // 格式检查通过
     return true; 
 }
-
+bool HttpConnection::shouldHaveBody()const{
+    if(_httpRequest.getMethod()==HttpMethod::kGet||_httpRequest.getMethod()==HttpMethod::kHead)return false;
+    const std::string& cl_str=_httpRequest.getHeader("Content-Length");
+    if(!cl_str.empty()){
+        try{
+            long long content_length=std::stoll(cl_str);
+            if(content_length>0)return true;
+        }catch (const std::exception& e){
+            std::cerr << "Error parsing Content-Length: " << e.what() << std::endl;
+            return false;
+        }
+        
+    }
+    const std::string& te_str=_httpRequest.getHeader("Transfer-Encoding");
+    if(te_str=="chunked")return true;
+    return false;
+}
 bool HttpConnection::parseRequest() {
     bool ok = true;
     bool hasMore = true; 
@@ -193,10 +212,32 @@ bool HttpConnection::parseRequest() {
             }
         } 
         else if (_httpRPS == HttpRequestParseState::kExpectHeaders) {
+            const char* crlf=_inBuffer.findCRLF();
+            if(crlf==nullptr){
+                hasMore=false;
+                break;
+            }
+            const char* begin_read=_inBuffer.begin()+_inBuffer.prependableBytes();
+            size_t line_length=crlf-begin_read;
+            if(line_length==0){
+                _inBuffer.retrieve(2);
+                if(shouldHaveBody())_httpRPS=HttpRequestParseState::kExpectBody;
+                else{
+                    _httpRPS=HttpRequestParseState::kGotAll;
+                    hasMore = false;
+                }
+                
+            }else if(line_length>0){
+                const std::string line(begin_read,crlf);
+                if(!parseHeaderLine(line)){
+                    _httpRPS=HttpRequestParseState::kParseError;
+                }
+                _inBuffer.retrieve(line_length+2);
+            }
             // TODO: 实现 Header 解析 (下一步)
             // 暂时跳过，以便测试请求行解析
-            _httpRPS = HttpRequestParseState::kGotAll; 
-            hasMore = false;
+            
+            
         }
         else if (_httpRPS == HttpRequestParseState::kExpectBody) {
             // TODO: 实现 Body 解析
@@ -214,6 +255,30 @@ bool HttpConnection::parseRequest() {
     return true; // 解析流程正常
 }
 
+std::string HttpConnection::trim(const std::string& str) {
+    size_t start = str.find_first_not_of(" \t\n\r");
+    size_t end = str.find_last_not_of(" \t\n\r");
+    return (start == std::string::npos) ? "" : str.substr(start, end - start + 1);
+}
+std::string to_lower(const std::string& str) {
+    std::string result = str; // 创建一个副本进行操作
+    
+    // 使用 std::transform 遍历字符串中的每个字符
+    std::transform(result.begin(), result.end(), result.begin(),
+                   [](unsigned char c) { 
+                       return std::tolower(c); 
+                   });
+    return result;
+}
+bool HttpConnection::parseHeaderLine(const std::string& line){
+    size_t colon_position;
+    if((colon_position=line.find(':'))==-1)return false;
+    const std::string& fieldName=HttpConnection::trim(line.substr(0,colon_position));
+    const std::string& value=HttpConnection::trim(line.substr(colon_position+1));
+    std::string lowerCaseFieldName = to_lower(fieldName);
+    _httpRequest.addHeader(lowerCaseFieldName,value);
+    return true;
+}
 // 【新增】processRequest 框架 (负责业务逻辑)
 void HttpConnection::processRequest() {
     // 这是一个临时的业务逻辑，用于测试解析是否成功
