@@ -281,7 +281,9 @@ bool HttpConnection::parseHeaderLine(const std::string& line){
 }
 // 【新增】processRequest 框架 (负责业务逻辑)
 void HttpConnection::processRequest() {
-    // 这是一个临时的业务逻辑，用于测试解析是否成功
+    const std::string& conn_value = _httpRequest.getHeader("connection");
+    bool keepAlive = (conn_value == "keep-alive");
+    _httpResponse.setCloseConnection(!keepAlive); 
     if (_httpRequest.getMethod() == HttpMethod::kGet) {
         std::cout << "Received GET request for path: " << _httpRequest.getPath() << std::endl;
         
@@ -289,27 +291,16 @@ void HttpConnection::processRequest() {
         _httpResponse.setStatusCode(200, "OK");
         _httpResponse.setBody("Hello from your C++ HTTP Server!");
         _httpResponse.setHeader("Content-Type", "text/plain");
-        _httpResponse.setHeader("Connection", _httpRequest.hasHeader("Connection") && _httpRequest.getHeader("Connection") == "keep-alive" ? "keep-alive" : "close");
         
-        // 将响应序列化到 _outBuffer
-        // 注意：这需要 HttpResponse::appendToBuffer 的实现 (后续步骤)
-        // 暂时简单地将响应主体放入 _outBuffer
-        // _outBuffer.append(_httpResponse.getBody().data(), _httpResponse.getBody().size());
-        
-        // 确保下一个请求能继续处理 (如果支持长连接)
-        _httpRequest.reset();
-        _httpRPS = HttpRequestParseState::kExpectRequestLine;
     } else {
         // 其他 Method，返回 405
         _httpResponse.setStatusCode(405, "Method Not Allowed");
         _httpResponse.setBody("Method not supported.");
         _httpResponse.setHeader("Content-Type", "text/plain");
-        _httpRequest.reset();
-        _httpRPS = HttpRequestParseState::kExpectRequestLine;
+        
     }
-    
-    // ⚠️ 此时我们需要实现 HttpResponse::appendToBuffer
-    // 由于我们还没有实现它，我们暂时跳过这里，但要确保 updateEvents 被调用
-    // 为了让代码能编译，我们暂时使用一个简单的桩函数来调用 updateEvents
+    _httpResponse.appendToBuffer(&_outBuffer);
+    _httpRequest.reset();
+    _httpRPS = HttpRequestParseState::kExpectRequestLine;
     updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
 }
