@@ -14,6 +14,7 @@
 #include "epoll.h"
 #include "HttpRequest.h"
 #include "HttpResponse.h"
+#include<limits.h>
 using EpollCallback = std::function<void(int fd, uint32_t events)>; //接受fd和新的epoll事件类型
 class HttpConnection:public std::enable_shared_from_this<HttpConnection>{
 private:
@@ -34,6 +35,8 @@ private:
     bool parseRequestLine(const std::string& line);
     bool parseHeaderLine(const std::string& line);
     void processRequest();//负责处理请求并生成响应
+    void handleGetRequest(); //处理GET请求的文件服务逻辑
+    std::string getMimeType(const std::string& path);//根据路径获取MIME类型
     bool shouldHaveBody()const;
     std::string trim(const std::string& str);
 public:

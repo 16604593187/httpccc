@@ -17,7 +17,7 @@ private:
 
 public:
     HttpResponse() : _statusCode(0), _closeConnection(false) {}
-
+    void reset();
     // --- 设置方法（供业务逻辑调用） ---
     void setStatusCode(int code, const std::string& message);
     void setHeader(const std::string& field, const std::string& value);

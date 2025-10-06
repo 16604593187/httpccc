@@ -2,58 +2,48 @@
 
 ## 概述
 
-`httpccc` 是一个基于现代 C++23 标准和 Linux Epoll 技术的轻量级、高性能 HTTP 服务器项目。本项目旨在提供一个稳健、快速的网络基础框架，采用 **Epoll 边缘触发 (ET) 模式**实现高效的 I/O 多路复用，并结合精细的 HTTP 协议状态机解析。
+`httpccc` 是一个基于现代 C++23 标准和 Linux Epoll 技术的轻量级、高性能 HTTP 服务器项目。本项目旨在提供一个稳健的网络基础框架，采用 **Epoll 边缘触发 (ET) 模式**实现高效的 I/O 多路复用，并支持基本的 **静态文件服务** 和 **长连接**。
 
 ## 核心特性与技术栈
 
-### 1. 网络 I/O 框架
+### 1. 网络与 I/O 基础
 
 - **I/O 模型:** 基于 Linux **Epoll** 的反应堆 (Reactor) 模式。
-- **触发模式:** 采用 **边缘触发 (ET)** 模式，通过在主循环中对监听 Socket 和客户端 Socket 进行循环 I/O 操作，最大限度地处理排队事件，提高并发性能。
-- **Socket 封装:** * 实现了 RAII 机制的 `Socket` 类，在析构时自动关闭文件描述符。
-  - 所有文件描述符（包括监听和客户端 FD）均设置为**非阻塞**模式。
-  - 在 Socket 创建时自动设置了 **SO_REUSEADDR** 端口复用选项。
-- **Epoll 封装:** 实现了 `Epoll` 类，封装了 `epoll_create1`、`epoll_ctl` (ADD/MOD/DEL) 等操作，并能在 `wait` 函数中正确处理 `EINTR` 中断事件。
-- **连接管理:** 客户端连接由 `std::shared_ptr<HttpConnection>` 在 `main.cpp` 的 `std::map` 中管理，确保了资源的自动清理和线程安全生命周期控制。
+- **触发模式:** 采用 **边缘触发 (ET)** 模式，通过循环 I/O 操作确保在一次通知中处理完所有事件，提高并发效率。
+- **Socket 封装:** 实现了 RAII 机制，所有 Socket 均设置为**非阻塞**模式，并支持 **SO_REUSEADDR** 端口复用。
+- **Buffer 机制:** 实现了高效的动态缓冲区 (`Buffer`)，通过 `readv` 系统调用支持**分散读取**，并优化了内存使用。
 
-### 2. I/O 和缓冲区管理
+### 2. HTTP 协议处理（解析与服务）
 
-- **动态缓冲区 (Buffer):** 实现了高效的 `Buffer` 类，支持动态扩容，通过判断可写空间和已读空间优化内存使用，减少内存拷贝。
-- **分散读取 (Scatter Read):** 读操作 `readFd` 使用 `readv` 系统调用，利用栈上备用缓冲区来处理大块数据，有效避免缓冲区溢出，并提高 I/O 效率。
-
-### 3. HTTP 协议处理
-
-- **状态机解析:** `HttpConnection` 类内嵌了一个状态机 (`HttpRequestParseState`)，能够逐步解析 HTTP 请求的各个组成部分。
-  - **请求行解析** (`kExpectRequestLine`)：识别 Method, URI, Version。
-  - **头部解析** (`kExpectHeaders`)：通过 `\r\n\r\n` 识别头部结束，并支持头部字段名称的**大小写不敏感处理**。
-  - **消息体准备** (`kExpectBody`)：已实现逻辑判断请求是否携带消息体 (Body)，并为 `Content-Length` 方式的消息体解析预留了状态和开始实现逻辑。
-- **响应生成:** `HttpResponse` 类负责组装和序列化 HTTP 响应（状态行、Header 和 Body）到 `_outBuffer` 中。
-- **长连接支持 (Keep-Alive):** 能够正确解析请求中的 `Connection` 头部，并设置响应，支持 HTTP 长连接或短连接模式。
-- **基本业务逻辑:** 已实现针对 **GET** 请求的简单文本响应 (200 OK) 和对其他未支持 Method 的 **405 Method Not Allowed** 响应。
+- **状态机解析:** 在 `HttpConnection` 中实现了精细的状态机，能够完整解析**请求行**和所有**请求头部**。
+- **长连接支持 (Keep-Alive):** 能够正确解析和设置 `Connection` 头部，支持长连接模式，并通过 `HttpResponse::reset()` 机制确保连接复用时的状态清理。
+- **静态文件服务（已完成）:**
+  - 实现了 **GET 请求**的文件读取和响应逻辑。
+  - 内置 **MIME 类型映射**，根据文件扩展名动态设置 `Content-Type`。
+  - 处理 **404 Not Found**、**403 Forbidden** 等文件相关的错误，并包含**目录穿越安全检查**。
+- **消息体解析 (Content-Length):** 实现了基于 `Content-Length` 的消息体读取逻辑，并能正确处理数据不足时的非阻塞等待状态。
+- **错误处理:** 对不支持的 Method 返回 **405 Method Not Allowed**。
 
 ## 项目结构
 
 ```
 .
-├── CMakeLists.txt        # CMake 构建脚本，使用 C++23 标准
-├── README.md             # 项目说明文件
+├── CMakeLists.txt          # CMake 构建脚本 (C++23)
+├── README.md               # 项目说明文件
 ├── include
-│   ├── Buffer.h          # 动态 I/O 缓冲区声明
-│   ├── epoll.h           # Epoll 封装类头文件
-│   ├── HttpConnection.h  # 单个 HTTP 连接处理类头文件
-│   ├── HttpRequest.h     # HTTP 请求数据结构头文件
-│   ├── HttpResponse.h    # HTTP 响应数据结构头文件
-│   └── socket.h          # Socket 封装头文件
+│   ├── Buffer.h            # 动态 I/O 缓冲区头文件
+│   ├── HttpConnection.h    # 单个 HTTP 连接处理类头文件
+│   ├── HttpRequest.h       # HTTP 请求数据结构
+│   ├── HttpResponse.h      # HTTP 响应数据结构 (含 reset 机制)
+│   ├── epoll.h             # Epoll 封装
+│   └── socket.h            # Socket 封装
 └── src
-    ├── Buffer.cpp        # 动态缓冲区实现
-    ├── epoll.cpp         # Epoll 类实现
-    ├── HttpConnection.cpp# 核心状态机和业务逻辑实现
-    ├── HttpResponse.cpp  # HTTP 响应序列化实现
-    ├── main.cpp          # 服务器主循环、Epoll 事件分发和连接管理
-    └── socket.cpp        # Socket 类实现 (非阻塞、端口复用)
+    ├── Buffer.cpp
+    ├── HttpConnection.cpp  # 核心状态机、MIME 映射、文件服务逻辑
+    ├── HttpResponse.cpp    # 响应序列化和 reset 实现
+    ├── main.cpp            # 服务器主循环和连接管理
+    └── ...
 ```
-
-
 
 ## 构建与运行
 
@@ -73,12 +63,24 @@ Bash
 mkdir build
 cd build
 
-# 2. 运行 CMake 配置项目 (在项目根目录运行)
+# 2. 运行 CMake 配置项目 (确保在项目根目录运行 cmake ..)
 cmake ..
 
 # 3. 编译项目
 make
 
-# 4. 运行服务器 (默认监听 0.0.0.0:8080)
-./MyProjectExec
+# 4. 返回根目录后运行服务器 (生成的程序名为 MyProjectExec，默认监听 0.0.0.0:8080)
+./build/MyProjectExec
+```
+
+### 3. 运行前准备
+
+要在本地测试静态文件服务，请在项目根目录创建 `webroot` 文件夹，并在其中放置 `index.html` 或其他静态文件。
+
+Bash
+
+```
+# 在项目根目录执行
+mkdir webroot
+echo "<h1>Hello World!</h1>" > webroot/index.html
 ```

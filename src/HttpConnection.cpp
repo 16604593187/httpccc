@@ -3,6 +3,208 @@
 #include<string>
 #include<algorithm>
 #include<cctype>
+#include<fstream>
+#include<sys/stat.h>
+#include<cerrno>
+#include<iostream>
+#include<codecvt>
+
+std::string to_lower(const std::string& str) {
+    std::string result = str; // 创建一个副本进行操作
+    
+    // 使用 std::transform 遍历字符串中的每个字符
+    std::transform(result.begin(), result.end(), result.begin(),
+                   [](unsigned char c) { 
+                       return std::tolower(c); 
+                   });
+    return result;
+}
+int hexToDecimal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0; // 应对无效字符
+}
+void url_decode(std::string& path) {
+    std::string decoded_path;
+    // 预留空间，避免多次分配
+    decoded_path.reserve(path.length()); 
+    
+    for (size_t i = 0; i < path.length(); ++i) {
+        if (path[i] == '%') {
+            // 检查是否有足够的字符进行解码，并且后两位是十六进制数字
+            if (i + 2 < path.length() && isxdigit(path[i+1]) && isxdigit(path[i+2])) {
+                // 1. 获取高位和低位的十进制值
+                int high = hexToDecimal(path[i+1]);
+                int low = hexToDecimal(path[i+2]);
+                
+                // 2. 合并并转换回字符
+                decoded_path += static_cast<char>(high * 16 + low);
+                
+                // 3. 跳过已处理的两位十六进制字符
+                i += 2; 
+            } else {
+                // 编码格式不完整或无效，按字面值处理 '%'
+                decoded_path += path[i];
+            }
+        } else if (path[i] == '+') {
+            // 虽然标准 HTTP 路径不常使用，但 Web 表单中 '+' 通常被解码为空格
+            decoded_path += ' '; 
+        } else {
+            // 其他字符，直接追加
+            decoded_path += path[i];
+        }
+    }
+    // 使用 std::move解码后的内容赋值回原字符串
+    path = std::move(decoded_path);
+}
+static std::map<std::string, std::string> mime_map = {
+    {".html", "text/html"},
+    {".htm", "text/html"},
+    {".css", "text/css"},
+    {".js", "application/javascript"},
+    {".png", "image/png"},
+    {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".gif", "image/gif"},
+    {".txt", "text/plain"},
+    {".ico", "image/x-icon"},
+    {"default", "application/octet-stream"}
+};
+std::string HttpConnection::getMimeType(const std::string& path){
+    size_t dot_pos=path.find_last_of('.');
+    if(dot_pos!=std::string::npos){
+        std::string ext=to_lower(path.substr(dot_pos));
+        auto it=mime_map.find(ext);
+        if(it!=mime_map.end())return it->second;
+    }
+    return mime_map["default"];
+}
+void HttpConnection::handleGetRequest() {
+    // 假设静态文件根目录为 webroot
+    const std::string WEB_ROOT = "webroot"; 
+    std::string path = _httpRequest.getPath();
+    
+    // 0. URL 解码路径
+    url_decode(path); 
+    
+    // 1. 默认路径处理: 如果请求根目录，则返回 index.html
+    if (path == "/") {
+        path = "/index.html";
+    }
+
+    // 2. 构造请求的文件路径和 Webroot 的绝对路径
+    std::string request_filepath_raw = WEB_ROOT + path; // e.g., "webroot/../.gitignore"
+    
+    // POSIX 规范化路径所需的缓冲区
+    char resolved_request_path[PATH_MAX];
+    char resolved_webroot_path[PATH_MAX];
+    
+    // --- 3. 安全检查: 边界检查 (使用 realpath) ---
+    
+    // A. 获取 Webroot 目录的规范化绝对路径
+    // 注意：如果 WEB_ROOT 不存在或无法访问，realpath 会返回 nullptr
+    if (realpath(WEB_ROOT.c_str(), resolved_webroot_path) == nullptr) {
+        std::cerr << "Error: Webroot path cannot be resolved or is inaccessible." << std::endl;
+        _httpResponse.setStatusCode(500, "Internal Server Error");
+        _httpResponse.setBody("500 Internal Server Error: Server configuration issue.");
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpResponse.setCloseConnection(true);
+        return;
+    }
+    std::string webroot_canonical(resolved_webroot_path);
+    
+    // B. 获取请求文件路径的规范化绝对路径
+    // 如果文件不存在，realpath 会失败，此时我们不判断 403，而是让 stat 检查返回 404。
+    if (realpath(request_filepath_raw.c_str(), resolved_request_path) == nullptr) {
+        // 如果 realpath 失败且错误不是 ENOENT (文件不存在)，则可能是一个非法的路径操作，我们按 403 处理
+        if (errno != ENOENT) {
+             _httpResponse.setStatusCode(403, "Forbidden");
+             _httpResponse.setBody("403 Forbidden: Invalid path resolution attempt.");
+             _httpResponse.setHeader("Content-Type", "text/plain");
+             _httpResponse.setCloseConnection(true);
+             return;
+        }
+        // 如果是 ENOENT，我们继续到 stat 检查，它会返回 404
+        
+    } else {
+        // C. 执行边界检查：确认规范化后的请求路径是否以 Webroot 路径开头
+        std::string request_canonical(resolved_request_path);
+        
+        // 检查请求路径是否是 webroot 路径的前缀 (必须使用 starts_with 或等效逻辑)
+        if (request_canonical.size() < webroot_canonical.size() || 
+            request_canonical.substr(0, webroot_canonical.size()) != webroot_canonical) 
+        {
+            // 规范化后的路径不再是 webroot 的子目录 -> 目录穿越成功
+            _httpResponse.setStatusCode(403, "Forbidden");
+            _httpResponse.setBody("403 Forbidden: Path traversal attempt detected.");
+            _httpResponse.setHeader("Content-Type", "text/plain");
+            _httpResponse.setCloseConnection(true);
+            return;
+        }
+        
+        // D. 路径安全，更新用于 stat 的 filepath
+        request_filepath_raw = request_canonical;
+    }
+    
+    // --- 4. 文件状态和 I/O 检查 (使用 stat) ---
+
+    // 此时 request_filepath_raw 可能是规范化后的绝对路径，或者如果 realpath 失败，仍然是原始的相对路径（等待 stat 检查 404）
+    
+    struct stat file_stat;
+    if (stat(request_filepath_raw.c_str(), &file_stat) < 0) {
+        // 文件不存在 (ENOENT) 或其他错误
+        if (errno == ENOENT) {
+            // 404 Not Found
+            _httpResponse.setStatusCode(404, "Not Found");
+            _httpResponse.setBody("404 Not Found: The requested resource was not found.");
+        } else {
+            // 403 Forbidden (权限问题或服务器内部错误)
+            _httpResponse.setStatusCode(403, "Forbidden");
+            _httpResponse.setBody("403 Forbidden: Access denied or file system error.");
+        }
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpResponse.setCloseConnection(true); 
+        return;
+    }
+
+    // 5. 检查是否为常规文件 (S_ISREG) - 防止目录列表泄露
+    if (!S_ISREG(file_stat.st_mode)) {
+        // 403 Forbidden (尝试访问目录、管道等)
+        _httpResponse.setStatusCode(403, "Forbidden");
+        _httpResponse.setBody("403 Forbidden: Cannot serve non-regular files.");
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpResponse.setCloseConnection(true);
+        return;
+    }
+    
+    // --- 200 OK: 文件找到并可读 ---
+    
+    // 6. 尝试读取文件内容 (使用 request_filepath_raw, 它现在是一个安全路径)
+    std::ifstream file(request_filepath_raw, std::ios::in | std::ios::binary);
+    
+    if (file) {
+        // ... (文件读取逻辑保持不变)
+        std::string content(
+            (std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>()
+        );
+        
+        _httpResponse.setStatusCode(200, "OK");
+        _httpResponse.setBody(content);
+        
+        // 设置 Content-Type
+        std::string mimeType = getMimeType(path);
+        _httpResponse.setHeader("Content-Type", mimeType);
+        
+    } else {
+        // 500 Internal Server Error (ifstream 打开失败)
+        _httpResponse.setStatusCode(500, "Internal Server Error");
+        _httpResponse.setBody("500 Internal Server Error: Failed to read file content.");
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpResponse.setCloseConnection(true);
+    }
+}
 HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)){
     if(_clientFd<0){
         throw std::runtime_error("Invalid file descriptor passed to HttpConnection.");
@@ -240,13 +442,45 @@ bool HttpConnection::parseRequest() {
             
         }
         else if (_httpRPS == HttpRequestParseState::kExpectBody) {
-            // TODO: 实现 Body 解析
-            _httpRPS = HttpRequestParseState::kGotAll; 
-            hasMore = false;
+            //进行消息体长度查找并转换
+            const std::string& cl_str=_httpRequest.getHeader("content-length");
+            long long content_length=0;
+            try{
+                content_length=std::stoll(cl_str);
+            }catch(const std::exception& e){
+                std::cerr << "Error parsing Content-Length in Body: " << e.what() << std::endl;
+                _httpRPS=HttpRequestParseState::kParseError;
+                ok=false;
+                hasMore=false;
+                break;
+            }
+            if(content_length>0){
+                //数据完整，可以解析
+                if(_inBuffer.readableBytes()>=content_length){
+                    const char* body_start=_inBuffer.begin()+_inBuffer.prependableBytes();
+                    std::string body_content(body_start,(size_t)content_length);
+                    _httpRequest.setBody(body_content);
+                    _inBuffer.retrieve((size_t)content_length);
+                    _httpRPS=HttpRequestParseState::kGotAll;
+                    hasMore=false;
+                }else hasMore=false;
+            }else{
+                _httpRPS=HttpRequestParseState::kGotAll;
+                hasMore=false;
+            }
+        }
+        //由于对chunked的解析状态机还未实现，这里先注释掉
+        /*else if(_httpRequest.hasHeader("transfer-encoding") && to_lower(_httpRequest.getHeader("transfer-encoding")) == "chunked"){
+            std::cerr << "Transfer-Encoding: chunked not yet supported on FD " << _clientFd << std::endl;
+            _httpRPS=HttpRequestParseState::kParseError;
+            ok=false;
+            hasMore=false;
         }
         else {
+            _httpRPS = HttpRequestParseState::kParseError;
+            ok=false;
             hasMore = false;
-        }
+        }*/
 
         if (!ok) {
             return false; // 格式错误，中断并返回失败
@@ -260,16 +494,7 @@ std::string HttpConnection::trim(const std::string& str) {
     size_t end = str.find_last_not_of(" \t\n\r");
     return (start == std::string::npos) ? "" : str.substr(start, end - start + 1);
 }
-std::string to_lower(const std::string& str) {
-    std::string result = str; // 创建一个副本进行操作
-    
-    // 使用 std::transform 遍历字符串中的每个字符
-    std::transform(result.begin(), result.end(), result.begin(),
-                   [](unsigned char c) { 
-                       return std::tolower(c); 
-                   });
-    return result;
-}
+
 bool HttpConnection::parseHeaderLine(const std::string& line){
     size_t colon_position;
     if((colon_position=line.find(':'))==-1)return false;
@@ -281,23 +506,19 @@ bool HttpConnection::parseHeaderLine(const std::string& line){
 }
 // 【新增】processRequest 框架 (负责业务逻辑)
 void HttpConnection::processRequest() {
+    _httpResponse.reset();
     const std::string& conn_value = _httpRequest.getHeader("connection");
     bool keepAlive = (conn_value == "keep-alive");
     _httpResponse.setCloseConnection(!keepAlive); 
     if (_httpRequest.getMethod() == HttpMethod::kGet) {
         std::cout << "Received GET request for path: " << _httpRequest.getPath() << std::endl;
-        
-        // 临时的响应生成：返回一个简单的 200 OK
-        _httpResponse.setStatusCode(200, "OK");
-        _httpResponse.setBody("Hello from your C++ HTTP Server!");
-        _httpResponse.setHeader("Content-Type", "text/plain");
-        
+        handleGetRequest();
     } else {
         // 其他 Method，返回 405
         _httpResponse.setStatusCode(405, "Method Not Allowed");
         _httpResponse.setBody("Method not supported.");
         _httpResponse.setHeader("Content-Type", "text/plain");
-        
+        _httpResponse.setCloseConnection(true);
     }
     _httpResponse.appendToBuffer(&_outBuffer);
     _httpRequest.reset();

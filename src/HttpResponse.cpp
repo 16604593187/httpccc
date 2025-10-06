@@ -9,6 +9,13 @@ void HttpResponse::setHeader(const std::string& field,const std::string& value){
 void HttpResponse::setBody(const std::string& body){
     _body=body;
 }
+void HttpResponse::reset(){
+    _statusCode=0;
+    _statusMessage.clear();
+    _headers.clear();
+    _body.clear();
+    _closeConnection=false;
+}
 void HttpResponse::appendToBuffer(Buffer* outputBuffer){
     //动态处理Headers
     size_t body_len=_body.size();
