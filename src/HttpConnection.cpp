@@ -8,7 +8,8 @@
 #include<cerrno>
 #include<iostream>
 #include<codecvt>
-
+#include<fcntl.h>
+#include<sys/sendfile.h>
 std::string to_lower(const std::string& str) {
     std::string result = str; // 创建一个副本进行操作
     
@@ -181,31 +182,31 @@ void HttpConnection::handleGetRequest() {
     // --- 200 OK: 文件找到并可读 ---
     
     // 6. 尝试读取文件内容 (使用 request_filepath_raw, 它现在是一个安全路径)
-    std::ifstream file(request_filepath_raw, std::ios::in | std::ios::binary);
+    _fileFd=::open(request_filepath_raw.c_str(),O_RDONLY);
     
-    if (file) {
-        // ... (文件读取逻辑保持不变)
-        std::string content(
-            (std::istreambuf_iterator<char>(file)),
-            std::istreambuf_iterator<char>()
-        );
-        
-        _httpResponse.setStatusCode(200, "OK");
-        _httpResponse.setBody(content);
-        
-        // 设置 Content-Type
-        std::string mimeType = getMimeType(path);
-        _httpResponse.setHeader("Content-Type", mimeType);
-        
-    } else {
-        // 500 Internal Server Error (ifstream 打开失败)
+    if (_fileFd<0) {
         _httpResponse.setStatusCode(500, "Internal Server Error");
         _httpResponse.setBody("500 Internal Server Error: Failed to read file content.");
         _httpResponse.setHeader("Content-Type", "text/plain");
         _httpResponse.setCloseConnection(true);
-    }
+        return;
+    } 
+    _fileTotalSize=file_stat.st_size;
+    _fileSentOffset=0;
+    _httpResponse.setStatusCode(200,"OK");
+    _httpResponse.setHeader("Content-Length", std::to_string(_fileTotalSize)); 
+    std::string mimeType = getMimeType(path);
+    _httpResponse.setHeader("Content-Type", mimeType);
+    
+    // 4. 将 Header 写入 _outBuffer
+    _httpResponse.appendToBuffer(&_outBuffer);
+    
+    // 5. 状态机清理和事件更新
+    _httpRequest.reset();
+    _httpRPS = HttpRequestParseState::kExpectRequestLine;
+    updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
 }
-HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)){
+HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)),_fileFd(-1),_fileSentOffset(0),_fileTotalSize(0){
     if(_clientFd<0){
         throw std::runtime_error("Invalid file descriptor passed to HttpConnection.");
     }
@@ -221,6 +222,12 @@ void HttpConnection::closeConnection(){
             std::cerr << "Error closing FD " << _clientFd << ": " << strerror(errno) << std::endl;
         }
         _clientFd=-1;
+    }
+    if(_fileFd>=0){
+        if(::close(_fileFd)==-1){
+            std::cerr << "Error closing FD " << _fileFd << ": " << strerror(errno) << std::endl;
+        }
+        _fileFd=-1;
     }
 }
 void HttpConnection::handleRead(){
@@ -265,9 +272,10 @@ void HttpConnection::handleClose(){
     }
     closeConnection();
 }
-void HttpConnection::handleWrite(){
-    if(_outBuffer.readableBytes()==0)return ;
-    size_t data_to_send=_outBuffer.readableBytes();
+void HttpConnection::handleWrite() {
+    // --- 阶段 1: 发送 Header (使用 Buffer) ---
+    if (_outBuffer.readableBytes() > 0) {
+        size_t data_to_send=_outBuffer.readableBytes();
     ssize_t bytes_written=0;
     while(data_to_send>0){
         const char* write_ptr=_outBuffer.begin()+_outBuffer.prependableBytes();
@@ -283,8 +291,45 @@ void HttpConnection::handleWrite(){
         data_to_send-=written_now;
         bytes_written+=written_now;
     }
-    if(_outBuffer.readableBytes()==0){
-        updateEvents(EPOLLIN | EPOLLET);
+        if (_outBuffer.readableBytes() > 0) return; // Header 还没发完，等待下次 EPOLLOUT
+    }
+
+    // --- 阶段 2: 发送 File Body (使用 sendfile) ---
+    // 只有当 Header 发送完毕 (_outBuffer 为空) 且有文件待发送时才进入
+    if (_fileFd >= 0 && _fileSentOffset < (off_t)_fileTotalSize) {
+        size_t remaining_bytes = _fileTotalSize - _fileSentOffset;
+        ssize_t sent_now = ::sendfile(_clientFd, _fileFd, &_fileSentOffset, remaining_bytes);
+
+        if (sent_now < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // 非阻塞，等待下一次 EPOLLOUT
+                return;
+            }
+            // 致命错误，关闭连接
+            std::cerr << "Fatal sendfile error on FD " << _clientFd << ": " << strerror(errno) << std::endl;
+            handleClose();
+            return;
+        }
+        
+        // 注意：sendfile 的偏移量 _fileSentOffset 会自动更新！
+        // 无需手动更新 _fileSentOffset += sent_now;
+    }
+
+    // --- 阶段 3: 发送完成后的清理 ---
+    if (_fileFd >= 0 && _fileSentOffset == (off_t)_fileTotalSize) {
+        // 文件全部发送完毕
+        ::close(_fileFd); // 关闭文件描述符
+        _fileFd = -1;
+        _fileTotalSize = 0;
+        _fileSentOffset = 0;
+
+        // 如果是短连接，关闭客户端连接；否则，切换回 EPOLLIN 等待下一个请求
+        if (_httpResponse.isCloseConnection()) {
+            handleClose(); // 调用关闭回调，移除连接
+        } else {
+            // 长连接：切换回只监听读事件 (EPOLLIN)，等待下一个请求
+            updateEvents(EPOLLIN | EPOLLET);
+        }
     }
 }
 void HttpConnection::updateEvents(uint32_t events){

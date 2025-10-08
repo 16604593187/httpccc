@@ -15,6 +15,7 @@
 #include "HttpRequest.h"
 #include "HttpResponse.h"
 #include<limits.h>
+#include<sys/stat.h>
 using EpollCallback = std::function<void(int fd, uint32_t events)>; //接受fd和新的epoll事件类型
 class HttpConnection:public std::enable_shared_from_this<HttpConnection>{
 private:
@@ -30,6 +31,10 @@ private:
     HttpRequest _httpRequest;
     HttpResponse _httpResponse;
     HttpRequestParseState _httpRPS;
+    //以下三个成员为sendfile函数做准备
+    int _fileFd;//待发送的文件描述符
+    size_t _fileTotalSize;//待发送的文件大小
+    off_t _fileSentOffset;//已发送的字节偏移量
 
     bool parseRequest();//负责解析并更新_httpRPS状态
     bool parseRequestLine(const std::string& line);
@@ -39,6 +44,16 @@ private:
     std::string getMimeType(const std::string& path);//根据路径获取MIME类型
     bool shouldHaveBody()const;
     std::string trim(const std::string& str);
+
+    //精确管理分块解析进度
+    enum ChunkParseState{
+        kExpectChunkSize,//期待读取下一个块的大小
+        kExpectChunkData,//期待读取块本身
+        kExpectChunkCRLF,//期待读取块数据结尾的\r\n
+        kExpectChunkBodyDone//解析完成
+    };
+    ChunkParseState _chunkState;
+    size_t _chunkSzie;
 public:
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();
