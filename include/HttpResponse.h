@@ -6,7 +6,7 @@
 #include <map>
 #include <vector>
 #include <cstring>
-
+#include<unordered_map>
 class HttpResponse {
 private:
     int _statusCode; // 状态码，如 200
@@ -14,7 +14,7 @@ private:
     std::map<std::string, std::string> _headers;
     std::string _body; // 响应主体内容
     bool _closeConnection; // 是否为短连接 (Connection: close)
-
+    
 public:
     HttpResponse() : _statusCode(0), _closeConnection(false) {}
     void reset();

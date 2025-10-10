@@ -56,6 +56,8 @@ private:
     
     //chunked的消息体解析
     bool parseChunkedBody();
+
+    
 public:
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();

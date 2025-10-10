@@ -1,4 +1,27 @@
 #include "HttpResponse.h"
+static const std::unordered_map<int, const char*> s_status_messages = {
+    {100, "Continue"},
+    {200, "OK"},
+    {204, "No Content"},
+    {301, "Moved Permanently"},
+    // ...
+    {400, "Bad Request"},
+    {403, "Forbidden"},
+    {404, "Not Found"},
+    {405, "Method Not Allowed"},
+    {500, "Internal Server Error"},
+    {501, "Not Implemented"}
+};
+const char* HttpResponse::getStatusMessage(int code){
+    // 使用更标准的静态变量命名 s_status_messages
+    auto it = s_status_messages.find(code); 
+    
+    if (it != s_status_messages.end()) {
+        return it->second; // 找到了，返回消息字符串
+    } else {
+        return "Unknown Status"; // 未找到，返回默认消息
+    }
+}
 void HttpResponse::setStatusCode(int code,const std::string& message){
     _statusCode=code;
     _statusMessage=message;
@@ -29,7 +52,7 @@ void HttpResponse::appendToBuffer(Buffer* outputBuffer){
     std::string activeline="HTTP/1.1 ";
     activeline+=std::to_string(_statusCode);
     activeline+=" ";
-    activeline+=_statusMessage;
+    activeline+=getStatusMessage(_statusCode);
     activeline+="\r\n";
     outputBuffer->append(activeline.data(),activeline.size());
     for(const auto& pair:_headers){

@@ -10,6 +10,12 @@
 #include<codecvt>
 #include<fcntl.h>
 #include<sys/sendfile.h>
+namespace {
+    // 限制单行（请求行或单个Header行）的最大字节数
+    static const size_t MAX_HEADER_LINE_LENGTH = 4096; 
+    // 限制 Header 字段的总个数 (可选，但推荐)
+    static const size_t MAX_HEADERS_COUNT = 64; 
+}
 std::string to_lower(const std::string& str) {
     std::string result = str; // 创建一个副本进行操作
     
@@ -380,6 +386,10 @@ HttpVersion stringToHttpVersion(const std::string& version_str) {
     return HttpVersion::kUnknown;
 }
 bool HttpConnection::parseRequestLine(const std::string& line) {
+    if(line.size()>MAX_HEADER_LINE_LENGTH){
+        _httpRPS=HttpRequestParseState::kParseError;
+        return false;
+    }
     std::stringstream ss(line);
     std::string method_str, uri, version_str;
     
@@ -470,6 +480,11 @@ bool HttpConnection::parseRequest() {
             }
             const char* begin_read=_inBuffer.begin()+_inBuffer.prependableBytes();
             size_t line_length=crlf-begin_read;
+            if(line_length>MAX_HEADER_LINE_LENGTH||_httpRequest._headers.size()>MAX_HEADERS_COUNT){
+                _httpRPS=HttpRequestParseState::kParseError;
+                return false;
+            }
+            
             if(line_length==0){
                 _inBuffer.retrieve(2);
                 if(shouldHaveBody())_httpRPS=HttpRequestParseState::kExpectBody;
@@ -696,6 +711,13 @@ bool HttpConnection::parseChunkedBody() {
                 const char* begin_read=_inBuffer.begin()+_inBuffer.prependableBytes();
                 size_t line_length=crlf-begin_read;
                 _inBuffer.retrieve(line_length+2);
+                if(line_length>0){
+                    const std::string line(begin_read,line_length);
+                    if(!parseHeaderLine(line)){
+                        ok=false;
+                        break;
+                    }
+                }
                 if(line_length==0)return true;
                 break;}
             default:{
