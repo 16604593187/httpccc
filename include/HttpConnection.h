@@ -19,6 +19,7 @@
 using EpollCallback = std::function<void(int fd, uint32_t events)>; //接受fd和新的epoll事件类型
 class HttpConnection:public std::enable_shared_from_this<HttpConnection>{
 private:
+    friend class HttpRequest;
     int _clientFd;
     Buffer _inBuffer;//读缓冲区
     Buffer _outBuffer;//写缓冲区
@@ -52,8 +53,9 @@ private:
         kExpectChunkCRLF,//期待读取块数据结尾的\r\n
         kExpectChunkBodyDone//解析完成
     };
-    ChunkParseState _chunkState;
-    size_t _chunkSzie;
+    
+    //chunked的消息体解析
+    bool parseChunkedBody();
 public:
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();

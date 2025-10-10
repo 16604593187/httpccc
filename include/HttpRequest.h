@@ -4,7 +4,7 @@
 #include <string>
 #include <map>
 #include <iostream>
-
+#include "HttpConnection.h"
 // 定义请求方法
 enum class HttpMethod {
     kGet, kPost, kHead, kPut, kDelete, kUnknown
@@ -23,6 +23,7 @@ enum class HttpRequestParseState{
 };
 class HttpRequest {
 private:
+    friend class HttpConnection;
     HttpMethod _method;
     HttpVersion _version;
     std::string _path;
@@ -30,6 +31,14 @@ private:
     std::map<std::string, std::string> _headers;
     std::string _body;
     
+    enum ChunkParseState{
+        kExpectChunkSize,//期待读取下一个块的大小
+        kExpectChunkData,//期待读取块本身
+        kExpectChunkCRLF,//期待读取块数据结尾的\r\n
+        kExpectChunkBodyDone//解析完成
+    };
+    ChunkParseState _chunkState;
+    size_t _chunkSize;
     // 【重要】定义解析状态枚举（将在HttpConnection中实现状态机）
     // 暂且留空，后续与 HttpConnection 集成时再定义
     

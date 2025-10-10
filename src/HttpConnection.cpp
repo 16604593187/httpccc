@@ -24,7 +24,7 @@ int hexToDecimal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return 0; // 应对无效字符
+    return -1; // 应对无效字符
 }
 void url_decode(std::string& path) {
     std::string decoded_path;
@@ -206,7 +206,9 @@ void HttpConnection::handleGetRequest() {
     _httpRPS = HttpRequestParseState::kExpectRequestLine;
     updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
 }
-HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)),_fileFd(-1),_fileSentOffset(0),_fileTotalSize(0){
+HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),
+_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)),
+_fileFd(-1),_fileSentOffset(0),_fileTotalSize(0){
     if(_clientFd<0){
         throw std::runtime_error("Invalid file descriptor passed to HttpConnection.");
     }
@@ -358,6 +360,8 @@ void HttpRequest::reset(){
     _query.clear();
     _headers.clear();
     _body.clear();
+    _chunkState=kExpectChunkSize;
+    _chunkSize=0;
 }
 bool HttpRequest::isParsedCompletely()const{
     return _method!=HttpMethod::kUnknown&&_version!=HttpVersion::kUnknown;
@@ -487,46 +491,61 @@ bool HttpConnection::parseRequest() {
             
         }
         else if (_httpRPS == HttpRequestParseState::kExpectBody) {
-            //进行消息体长度查找并转换
-            const std::string& cl_str=_httpRequest.getHeader("content-length");
-            long long content_length=0;
-            try{
-                content_length=std::stoll(cl_str);
-            }catch(const std::exception& e){
-                std::cerr << "Error parsing Content-Length in Body: " << e.what() << std::endl;
-                _httpRPS=HttpRequestParseState::kParseError;
-                ok=false;
-                hasMore=false;
-                break;
+            const std::string& te_str = _httpRequest.getHeader("transfer-encoding");
+            
+            // 1. 检查是否为分块传输
+            if (to_lower(te_str) == "chunked") {
+                // 调用新的分块解析函数
+                ok = parseChunkedBody();
+                
+                if (ok && _httpRequest._chunkState == HttpRequest::kExpectChunkBodyDone) {
+                    _httpRPS = HttpRequestParseState::kGotAll;
+                } else if (!ok) {
+                    _httpRPS = HttpRequestParseState::kParseError;
+                } else {
+                    hasMore = false; // 等待更多数据
+                }
             }
-            if(content_length>0){
-                //数据完整，可以解析
-                if(_inBuffer.readableBytes()>=content_length){
-                    const char* body_start=_inBuffer.begin()+_inBuffer.prependableBytes();
-                    std::string body_content(body_start,(size_t)content_length);
-                    _httpRequest.setBody(body_content);
-                    _inBuffer.retrieve((size_t)content_length);
-                    _httpRPS=HttpRequestParseState::kGotAll;
-                    hasMore=false;
-                }else hasMore=false;
-            }else{
-                _httpRPS=HttpRequestParseState::kGotAll;
-                hasMore=false;
-            }
-        }
-        //由于对chunked的解析状态机还未实现，这里先注释掉
-        /*else if(_httpRequest.hasHeader("transfer-encoding") && to_lower(_httpRequest.getHeader("transfer-encoding")) == "chunked"){
-            std::cerr << "Transfer-Encoding: chunked not yet supported on FD " << _clientFd << std::endl;
-            _httpRPS=HttpRequestParseState::kParseError;
-            ok=false;
-            hasMore=false;
-        }
-        else {
-            _httpRPS = HttpRequestParseState::kParseError;
-            ok=false;
-            hasMore = false;
-        }*/
+            // 2. 检查是否为 Content-Length 传输 (定长)
+            else {
+                // 原有的 Content-Length 逻辑
+                const std::string& cl_str=_httpRequest.getHeader("content-length");
+                long long content_length=0;
+                
+                // 尝试解析 Content-Length
+                if (!cl_str.empty()) {
+                    try{
+                        content_length=std::stoll(cl_str);
+                    }catch(const std::exception& e){
+                        std::cerr << "Error parsing Content-Length in Body: " << e.what() << std::endl;
+                        ok=false; // 格式错误，设置 ok=false
+                    }
+                }
 
+                if (ok) {
+                    if(content_length>0){
+                        //数据完整，可以解析
+                        if(_inBuffer.readableBytes()>=content_length){
+                            const char* body_start=_inBuffer.begin()+_inBuffer.prependableBytes();
+                            std::string body_content(body_start,(size_t)content_length);
+                            // 注意：对于 Content-Length 消息体，我们应该使用 append 而非 setBody，
+                            // 但由于我们目前假定请求Body较小，继续使用 setBody。
+                            _httpRequest.setBody(body_content); 
+                            _inBuffer.retrieve((size_t)content_length);
+                            _httpRPS=HttpRequestParseState::kGotAll;
+                        } else {
+                            hasMore=false; // 数据不足，等待
+                        }
+                    } else {
+                        // Content-Length 为 0 或缺失 (且不是 chunked)
+                        _httpRPS=HttpRequestParseState::kGotAll;
+                    }
+                }
+                if(_httpRPS==HttpRequestParseState::kGotAll||!ok){
+                hasMore=false;
+                }
+            }
+        }
         if (!ok) {
             return false; // 格式错误，中断并返回失败
         }
@@ -555,9 +574,24 @@ void HttpConnection::processRequest() {
     const std::string& conn_value = _httpRequest.getHeader("connection");
     bool keepAlive = (conn_value == "keep-alive");
     _httpResponse.setCloseConnection(!keepAlive); 
-    if (_httpRequest.getMethod() == HttpMethod::kGet) {
-        std::cout << "Received GET request for path: " << _httpRequest.getPath() << std::endl;
-        handleGetRequest();
+    
+    // 检查 GET 和 HEAD 方法
+    if (_httpRequest.getMethod() == HttpMethod::kGet || _httpRequest.getMethod() == HttpMethod::kHead) {
+        
+        std::cout << "Received " 
+                  << (_httpRequest.getMethod() == HttpMethod::kHead ? "HEAD" : "GET") 
+                  << " request for path: " << _httpRequest.getPath() << std::endl;
+        
+        // 1. 运行 handleGetRequest：
+        //    - 执行文件安全检查
+        //    - 准备零拷贝状态 (_fileFd, Content-Length Header)
+        handleGetRequest(); 
+        
+        // 2. 如果是 HEAD 请求，必须清除响应体 (但保留 Content-Length Header)
+        if (_httpRequest.getMethod() == HttpMethod::kHead) {
+            _httpResponse.setBody(""); 
+        }
+
     } else {
         // 其他 Method，返回 405
         _httpResponse.setStatusCode(405, "Method Not Allowed");
@@ -565,8 +599,110 @@ void HttpConnection::processRequest() {
         _httpResponse.setHeader("Content-Type", "text/plain");
         _httpResponse.setCloseConnection(true);
     }
+    
     _httpResponse.appendToBuffer(&_outBuffer);
     _httpRequest.reset();
     _httpRPS = HttpRequestParseState::kExpectRequestLine;
     updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
+}
+
+bool HttpConnection::parseChunkedBody() {
+    bool ok = true;
+    do{
+        switch (_httpRequest._chunkState) {
+            case HttpRequest::kExpectChunkSize:{
+                const char* crlf = _inBuffer.findCRLF();
+                if (crlf == nullptr) {
+                    return true; // 数据不足，等待下次读取
+                }
+
+                const char* begin_read = _inBuffer.begin() + _inBuffer.prependableBytes();
+                size_t chunk_size_val = 0;
+                bool hex_found = false;
+                
+                // 1. 迭代解析十六进制大小
+                const char* current = begin_read;
+                for (; current < crlf; ++current) {
+                    int digit = hexToDecimal(*current); 
+                    
+                    if (digit != -1) { // 假设 hexToDecimal 返回 -1 表示不是十六进制数字
+                        chunk_size_val = chunk_size_val * 16 + digit;
+                        hex_found = true;
+                    } else if (*current == ' ' || *current == ';') {
+                        // 遇到空格或分号，表示十六进制数结束（后面是扩展名或空格）
+                        break;
+                    } else if (isxdigit(*current)) { 
+                         // 如果 hexToDecimal 没有处理大小写，这里需要额外的检查，
+                         // 但如果 digit == -1 已经处理了非十六进制，这里可以简化。
+                         // 保持 robust，如果遇到非十六进制且不是空格或分号，则格式错误。
+                         ok = false; 
+                         break;
+                    }
+                }
+                
+                // 2. 检查解析结果和格式错误
+                if (!ok || !hex_found) { // 如果解析过程中出错了或根本没有找到数字
+                    _httpRequest._chunkSize = 0;
+                    ok = false;
+                    break;
+                }
+                
+                // 3. 更新状态变量
+                _httpRequest._chunkSize = chunk_size_val;
+                
+                // 4. 消耗块大小信息行 (从 begin_read 到 crlf + 2)
+                _inBuffer.retrieve((crlf - begin_read) + 2);
+
+                // 5. 状态机迁移
+                if (_httpRequest._chunkSize > 0) {
+                    _httpRequest._chunkState = HttpRequest::kExpectChunkData;
+                } else {
+                    // 块大小为 0，表示消息体结束 (需要处理 Footer)
+                    _httpRequest._chunkState = HttpRequest::kExpectChunkBodyDone;
+                }
+                break;}
+            case HttpRequest::kExpectChunkData:{
+            size_t chunk_len = _httpRequest._chunkSize;
+                
+                // 修正: 发现数据不足时，必须返回 true 暂停解析
+                if (chunk_len > _inBuffer.readableBytes()) {
+                    return true; 
+                }
+                
+                const char* begin_read = _inBuffer.begin() + _inBuffer.prependableBytes();
+                
+                _httpRequest._body.append(begin_read, chunk_len);
+
+                _inBuffer.retrieve(chunk_len);
+                
+                _httpRequest._chunkSize = 0; 
+                _httpRequest._chunkState = HttpRequest::kExpectChunkCRLF;
+                break;}
+            case HttpRequest::kExpectChunkCRLF:{
+                if(_inBuffer.readableBytes()<2)return true;
+                else{
+                    const char* crlf=_inBuffer.begin()+_inBuffer.prependableBytes();
+                    if(crlf[0]=='\r'&&crlf[1]=='\n'){
+                        _inBuffer.retrieve(2);
+                        _httpRequest._chunkState=HttpRequest::kExpectChunkSize;
+                        
+                    }
+                    else ok=false;
+                }
+                break;
+            case HttpRequest::kExpectChunkBodyDone:
+                const char* crlf=_inBuffer.findCRLF();
+                if(crlf==nullptr)return true;
+                const char* begin_read=_inBuffer.begin()+_inBuffer.prependableBytes();
+                size_t line_length=crlf-begin_read;
+                _inBuffer.retrieve(line_length+2);
+                if(line_length==0)return true;
+                break;}
+            default:{
+                // 不应该到达这里
+                ok = false;
+                break;}
+        }
+    }while (ok && _httpRequest._chunkState != HttpRequest::kExpectChunkBodyDone);
+    return ok;
 }
