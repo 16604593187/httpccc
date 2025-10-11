@@ -61,6 +61,8 @@ private:
     //超时处理
     using Clock=std::chrono::high_resolution_clock;
     Clock::time_point _lastActiveTime;
+    //post和put请求支持
+    void handlePostOrPutRequest();
 public:
     void closeConnection();
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞

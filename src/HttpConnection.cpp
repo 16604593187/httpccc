@@ -621,7 +621,10 @@ void HttpConnection::processRequest() {
             _httpResponse.setBody(""); 
         }
 
-    } else {
+    } else if(_httpRequest.getMethod()==HttpMethod::kPost||_httpRequest.getMethod()==HttpMethod::kPut){
+        handlePostOrPutRequest();
+    }
+    else {
         // 其他 Method，返回 405
         _httpResponse.setStatusCode(405, "Method Not Allowed");
         _httpResponse.setBody("Method not supported.");
@@ -741,4 +744,124 @@ bool HttpConnection::parseChunkedBody() {
         }
     }while (ok && _httpRequest._chunkState != HttpRequest::kExpectChunkBodyDone);
     return ok;
+}
+void HttpConnection::handlePostOrPutRequest(){
+    // 假设静态文件根目录为 webroot
+    const std::string WEB_ROOT = "webroot"; 
+    std::string path = _httpRequest.getPath();
+    std::string request_filepath_raw; // 保持
+    std::string webroot_canonical; // 仅声明，不初始化
+    std::string request_canonical; // 仅声明，不初始化
+    bool file_exists;
+    // 0. URL 解码路径
+    url_decode(path); 
+    
+    // 1. 默认路径处理: 如果请求根目录，则返回 index.html
+    
+
+    // 2. 构造请求的文件路径和 Webroot 的绝对路径
+    request_filepath_raw = WEB_ROOT + path; // e.g., "webroot/../.gitignore"
+    
+    // POSIX 规范化路径所需的缓冲区
+    char resolved_request_path[PATH_MAX];
+    char resolved_webroot_path[PATH_MAX];
+    
+    // --- 3. 安全检查: 边界检查 (使用 realpath) ---
+    
+    // A. 获取 Webroot 目录的规范化绝对路径
+    // 注意：如果 WEB_ROOT 不存在或无法访问，realpath 会返回 nullptr
+    if (realpath(WEB_ROOT.c_str(), resolved_webroot_path) == nullptr) {
+        std::cerr << "Error: Webroot path cannot be resolved or is inaccessible." << std::endl;
+        _httpResponse.setStatusCode(500, "Internal Server Error");
+        _httpResponse.setBody("500 Internal Server Error: Server configuration issue.");
+        _httpResponse.setHeader("Content-Type", "text/plain");
+        _httpResponse.setCloseConnection(true);
+        goto end_request;
+    }
+    webroot_canonical = resolved_webroot_path; 
+    
+    // B. 获取请求文件路径的规范化绝对路径
+    // 如果文件不存在，realpath 会失败，此时我们不判断 403，而是让 stat 检查返回 404。
+    if (realpath(request_filepath_raw.c_str(), resolved_request_path) == nullptr) {
+        // 如果 realpath 失败且错误不是 ENOENT (文件不存在)，则可能是一个非法的路径操作，我们按 403 处理
+        if (errno != ENOENT) {
+             _httpResponse.setStatusCode(403, "Forbidden");
+             _httpResponse.setBody("403 Forbidden: Invalid path resolution attempt.");
+             _httpResponse.setHeader("Content-Type", "text/plain");
+             _httpResponse.setCloseConnection(true);
+             goto end_request;
+        }
+        // 如果是 ENOENT，我们继续到 stat 检查，它会返回 404
+        
+    } else {
+        // C. 执行边界检查：确认规范化后的请求路径是否以 Webroot 路径开头
+        request_canonical = resolved_request_path;
+        
+        // 检查请求路径是否是 webroot 路径的前缀 (必须使用 starts_with 或等效逻辑)
+        if (request_canonical.size() < webroot_canonical.size() || 
+            request_canonical.substr(0, webroot_canonical.size()) != webroot_canonical) 
+        {
+            // 规范化后的路径不再是 webroot 的子目录 -> 目录穿越成功
+            _httpResponse.setStatusCode(403, "Forbidden");
+            _httpResponse.setBody("403 Forbidden: Path traversal attempt detected.");
+            _httpResponse.setHeader("Content-Type", "text/plain");
+            _httpResponse.setCloseConnection(true);
+            goto end_request;
+        }
+        
+        // D. 路径安全，更新用于 stat 的 filepath
+        request_filepath_raw = request_canonical;
+    }
+    struct stat file_stat;
+    file_exists=(stat(request_filepath_raw.c_str(),&file_stat)==0);
+    if(file_exists){
+        if(!S_ISREG(file_stat.st_mode)){
+            _httpResponse.setStatusCode(403, "Forbidden");
+            _httpResponse.setBody("403 Forbidden: Cannot write to non-regular files or directories.");
+            _httpResponse.setHeader("Content-Type", "text/plain");
+            _httpResponse.setCloseConnection(true);
+            goto end_request; // 使用 goto 简化多层退出逻辑
+        }
+    }
+    if (_httpRequest.getMethod() == HttpMethod::kPut) {
+        // 1. 尝试打开/创建文件
+        // O_WRONLY: 只写，O_CREAT: 不存在则创建，O_TRUNC: 存在则截断为零，0664: 权限模式
+        int target_fd = ::open(request_filepath_raw.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
+
+        if (target_fd < 0) {
+            // 权限不足 (EACCES) 或其他文件系统错误
+            _httpResponse.setStatusCode(403, "Forbidden");
+            _httpResponse.setBody("403 Forbidden: Failed to open or create file for writing.");
+             _httpResponse.setHeader("Content-Type", "text/plain");
+             _httpResponse.setCloseConnection(true);
+        } else {
+            // 2. 写入数据
+            size_t body_size = _httpRequest._body.size();
+            ssize_t bytes_written = ::write(target_fd, _httpRequest._body.data(), body_size);
+            ::close(target_fd);
+            if (bytes_written == (ssize_t)body_size) {
+                // 3. 写入成功，设置响应
+                _httpResponse.setStatusCode(200, "OK"); // 常用 200 OK 或 201 Created
+                _httpResponse.setBody("Resource updated/created successfully.");
+                _httpResponse.setHeader("Content-Type", "text/plain");
+            } else {
+                // 4. 写入失败
+                _httpResponse.setStatusCode(500, "Internal Server Error");
+                _httpResponse.setBody("500 Internal Server Error: Failed to write all content to file.");
+                _httpResponse.setHeader("Content-Type", "text/plain");
+                _httpResponse.setCloseConnection(true);
+            }
+        } 
+    }
+    else if (_httpRequest.getMethod() == HttpMethod::kPost) {
+            // POST 逻辑 (简单响应)
+            // 假设数据已被处理 (虽然我们没有实现实际的后端处理)
+            _httpResponse.setStatusCode(204, "No Content"); // 204 表示成功但无响应体
+    }
+    end_request:
+        _httpResponse.appendToBuffer(&_outBuffer);
+        _httpRequest.reset();
+        _httpRPS = HttpRequestParseState::kExpectRequestLine;
+        updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
+    
 }
