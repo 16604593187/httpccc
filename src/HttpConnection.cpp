@@ -213,7 +213,7 @@ void HttpConnection::handleGetRequest() {
     updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
 }
 HttpConnection::HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb):_clientFd(fd),
-_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)),
+_mod_callback(std::move(mod_cb)),_close_callback(std::move(close_cb)),_lastActiveTime(Clock::now()),
 _fileFd(-1),_fileSentOffset(0),_fileTotalSize(0){
     if(_clientFd<0){
         throw std::runtime_error("Invalid file descriptor passed to HttpConnection.");
@@ -224,8 +224,18 @@ _fileFd(-1),_fileSentOffset(0),_fileTotalSize(0){
 HttpConnection::~HttpConnection(){
     closeConnection();
 }
+// src/HttpConnection.cpp
 void HttpConnection::closeConnection(){
     if(_clientFd>=0){
+        // *** 关键修复：先调用 shutdown() 确保 TCP 栈立即停止传输 ***
+        // SHUT_RDWR 禁用所有读写操作
+        if (::shutdown(_clientFd, SHUT_RDWR) == -1) {
+             // 常见错误是 ENOTCONN (FD 已经半关闭)，打印警告，继续。
+             if (errno != ENOTCONN) {
+                 std::cerr << "Warning: Shutdown failed for FD " << _clientFd << ": " << strerror(errno) << std::endl;
+             }
+        }
+        
         if(::close(_clientFd)==-1){
             std::cerr << "Error closing FD " << _clientFd << ": " << strerror(errno) << std::endl;
         }
@@ -242,6 +252,7 @@ void HttpConnection::handleRead(){
     int savedErrno=0;
     ssize_t n=_inBuffer.readFd(_clientFd,&savedErrno);
     if(n>0){
+        updateActiveTime();
         bool parse_result=true;
 
         while(_httpRPS!=HttpRequestParseState::kGotAll&& _inBuffer.readableBytes() > 0){
@@ -275,10 +286,12 @@ void HttpConnection::handleRead(){
     }
 }
 void HttpConnection::handleClose(){
-    if(_close_callback){
-        _close_callback(_clientFd,0);
-    }
-    closeConnection();
+    if (_clientFd >= 0) {
+        if (::shutdown(_clientFd, SHUT_RDWR) == -1 && errno != ENOTCONN) {
+             std::cerr << "Warning: Shutdown failed for FD " << _clientFd << ": " << strerror(errno) << std::endl;
+        }
+        // 关键：不调用 ::close()，让析构函数来做，但先标记状态。
+        _clientFd = -1; }
 }
 void HttpConnection::handleWrite() {
     // --- 阶段 1: 发送 Header (使用 Buffer) ---
@@ -335,6 +348,7 @@ void HttpConnection::handleWrite() {
         if (_httpResponse.isCloseConnection()) {
             handleClose(); // 调用关闭回调，移除连接
         } else {
+            updateActiveTime();
             // 长连接：切换回只监听读事件 (EPOLLIN)，等待下一个请求
             updateEvents(EPOLLIN | EPOLLET);
         }

@@ -16,6 +16,7 @@
 #include "HttpResponse.h"
 #include<limits.h>
 #include<sys/stat.h>
+#include<chrono>
 using EpollCallback = std::function<void(int fd, uint32_t events)>; //接受fd和新的epoll事件类型
 class HttpConnection:public std::enable_shared_from_this<HttpConnection>{
 private:
@@ -24,7 +25,7 @@ private:
     Buffer _inBuffer;//读缓冲区
     Buffer _outBuffer;//写缓冲区
 
-    void closeConnection();
+    
     EpollCallback _mod_callback;
     EpollCallback _close_callback;
     void updateEvents(uint32_t events);
@@ -57,8 +58,11 @@ private:
     //chunked的消息体解析
     bool parseChunkedBody();
 
-    
+    //超时处理
+    using Clock=std::chrono::high_resolution_clock;
+    Clock::time_point _lastActiveTime;
 public:
+    void closeConnection();
     HttpConnection(int fd,EpollCallback mod_cb,EpollCallback close_cb);//接管fd并设置非阻塞
     ~HttpConnection();
     HttpConnection(const HttpConnection&)=delete;
@@ -67,5 +71,9 @@ public:
     void handleWrite();
     void handleClose();
     int fd() const {return _clientFd;}
+
+    //超时处理
+    void updateActiveTime(){_lastActiveTime=Clock::now();}
+    Clock::time_point getLastActiveTime()const{return _lastActiveTime;}
 };
 #endif

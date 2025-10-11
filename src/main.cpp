@@ -11,12 +11,13 @@
 #include <cerrno>
 #include <map>           // 【新增】用于连接管理器
 #include <memory>        // 【新增】用于智能指针
-
+#include<chrono>
 // 定义常量 (不变)
 const std::string SERVER_IP = "0.0.0.0"; 
 const uint16_t SERVER_PORT = 8080;
 const int LISTEN_BACKLOG = 1024;
-
+const int IDLE_TIMEOUT_SECONDS=60;
+const int EPOLL_WAIT_TIMEOUT_MS=1000;
 int main() {
     // --- 变量定义提升：确保在整个 main 作用域内可见 ---
     Socket listen_socket; 
@@ -29,15 +30,13 @@ int main() {
     };
     // 现在 Lambda 可以通过引用 [&] 安全地捕获 epoll_poller 和 connections
     auto close_and_remove_conn = [&](int fd,uint32_t events) {
-        // 1. 从 Epoll 监控中移除
         try {
-            epoll_poller.del_fd(fd);
+        epoll_poller.del_fd(fd);
         } catch (const std::runtime_error& e) {
-            // del_fd 失败通常只打印警告
             std::cerr << "Warning: Epoll del_fd failed for FD " << fd << ": " << e.what() << std::endl;
         }
 
-        // 2. 从 Map 中移除 (shared_ptr 自动调用 HttpConnection 析构函数，关闭FD)
+        // 从 Map 中移除。shared_ptr 自动调用 HttpConnection 析构函数，析构函数调用 closeConnection()，最终关闭 FD。
         connections.erase(fd);
         std::cout << "--- Connection closed and removed for FD: " << fd << " ---" << std::endl;
     };
@@ -61,9 +60,43 @@ int main() {
         // --- 3. 事件主循环 ---
         
         while (true) {
-            int num_events = epoll_poller.wait(-1); 
+            int num_events = epoll_poller.wait(EPOLL_WAIT_TIMEOUT_MS); 
             const auto& events = epoll_poller.get_events(); 
+            // 1. 获取当前时间点
+            using Clock = std::chrono::high_resolution_clock;
+            auto currentTime = Clock::now();
 
+            // 2. 遍历连接Map并清理
+            // 2. 遍历连接Map并清理
+            for (auto it = connections.begin(); it != connections.end(); /* ... */) {
+                
+                std::shared_ptr<HttpConnection> conn = it->second;
+                // 3. 计算空闲时长
+                auto lastActiveTime = conn->getLastActiveTime();
+                auto idleDuration = std::chrono::duration_cast<std::chrono::seconds>(currentTime - lastActiveTime);
+                if (idleDuration.count() >= IDLE_TIMEOUT_SECONDS) {
+                    int client_fd = it->first;
+                    std::cout << "--- Connection timed out (FD: " << client_fd << "). Cleaning up. ---" << std::endl;
+
+                    // 1. 【安全】手动从 Epoll 中移除 (防止定时器清理失败)
+                    conn->closeConnection();
+                    try {
+                        epoll_poller.del_fd(client_fd);
+                    } catch (const std::runtime_error& e) {
+                        std::cerr << "Warning: Epoll del_fd failed for FD " << client_fd << ": " << e.what() << std::endl;
+                    }
+
+                    // 2. 【安全】调用内部资源清理 (关闭FD，不触发回调)
+                    
+                    
+                    // 3. 【安全】从 Map 中删除并更新迭代器
+                    it = connections.erase(it); 
+                    std::cout << "--- Connection closed and removed by timer. ---" << std::endl;
+                } else {
+                    // 如果没有删除，则安全地移动到下一个元素
+                    ++it; 
+                }
+            }
             for (int i = 0; i < num_events; ++i) {
                 int current_fd = events[i].data.fd; 
                 uint32_t event_type = events[i].events;
@@ -130,8 +163,18 @@ int main() {
                     // 2. 清理已关闭的连接
                     // HttpConnection::handleClose() 在关闭 FD 后，将 _clientFd 设为 -1
                     if (conn->fd() < 0) { 
+                        try {
+                            epoll_poller.del_fd(current_fd);
+                        } catch (const std::runtime_error& e) {
+                            std::cerr << "Warning: Epoll del_fd failed for FD " << current_fd << ": " << e.what() << std::endl;
+                        }
+
+                    // 2. 从 Map 中移除
+                        connections.erase(current_fd);
+                        std::cout << "--- Connection closed and removed for FD: " << current_fd << " ---" << std::endl;
+                        continue; // 立即跳到下一个事件
                         // close_and_remove_conn 会负责调用 epoll_poller.del_fd
-                        close_and_remove_conn(current_fd,0); 
+                        //close_and_remove_conn(current_fd,0); 
                     } else {
                         // 【下一步需完善：事件切换】
                         // 现在我们需要让 HttpConnection 能够调用 epoll_poller.mod_fd
