@@ -1,6 +1,7 @@
 #include "socket.h"
 #include "epoll.h" 
 #include "HttpConnection.h" // 【新增】引入 HttpConnection 类
+#include "ThreadPool.h"
 #include <iostream>
 #include <stdexcept>
 #include <string>
