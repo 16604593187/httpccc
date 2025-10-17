@@ -7,6 +7,10 @@
 #include <string>
 #include <unistd.h>      
 #include <sys/epoll.h>   
+#include<sys/eventfd.h>
+#include<mutex>
+#include<queue>
+#include<unistd.h>
 #include <arpa/inet.h>   
 #include <cstring>
 #include <cerrno>
@@ -19,21 +23,41 @@ const uint16_t SERVER_PORT = 8080;
 const int LISTEN_BACKLOG = 1024;
 const int IDLE_TIMEOUT_SECONDS=60;
 const int EPOLL_WAIT_TIMEOUT_MS=1000;
+struct EpollTask{
+    int fd;
+    uint32_t events;
+};
+std::mutex g_task_mutex;
+std::queue<EpollTask>g_task_queue;
+int g_event_fd=-1;
 int main() {
     // --- 变量定义提升：确保在整个 main 作用域内可见 ---
     Socket listen_socket; 
     Epoll epoll_poller; 
     std::map<int, std::shared_ptr<HttpConnection>> connections; 
-
-
+    g_event_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
+    if(g_event_fd<0){
+        throw std::runtime_error("eventfd creation failed: " + std::string(strerror(errno)));
+    }
+    auto epoll_mod_cb=[&](int fd,uint32_t events){
+        {
+            std::lock_guard<std::mutex>lock(g_task_mutex);
+            g_task_queue.push({fd,events});
+        }
+        uint64_t one=1;
+        ssize_t n= write(g_event_fd,&one,sizeof(one));
+        if(n!=sizeof(one)){
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+             std::cerr << "Warning: Failed to write to eventfd: " << strerror(errno) << std::endl;
+            }
+        }
+    };
     //线程池定义
     size_t num_cpus = std::thread::hardware_concurrency();
     size_t pool_size = num_cpus > 0 ? num_cpus : 4; // 至少4个线程
     ThreadPool thread_pool(pool_size); // 【新增】创建线程池实例
-    // 【新增】统一的连接关闭和移除逻辑
-    auto epoll_mod_cb = [&](int fd, uint32_t events) {
-        epoll_poller.mod_fd(fd, events);
-    };
+    
+    
     // 现在 Lambda 可以通过引用 [&] 安全地捕获 epoll_poller 和 connections
     auto close_and_remove_conn = [&](int fd,uint32_t events) {
         try {
@@ -62,7 +86,8 @@ int main() {
         // 注册监听 Socket 到 Epoll，监听输入事件 (EPOLLIN) 并设置为边缘触发 (EPOLLET)
         epoll_poller.add_fd(listen_socket.fd(), EPOLLIN | EPOLLET); 
         std::cout << "Listening socket registered to Epoll." << std::endl;
-
+        epoll_poller.add_fd(g_event_fd, EPOLLIN | EPOLLET); // 监听输入事件
+        std::cout << "eventfd registered to Epoll for inter-thread signaling." << std::endl;
         // --- 3. 事件主循环 ---
         
         while (true) {
@@ -106,7 +131,29 @@ int main() {
             for (int i = 0; i < num_events; ++i) {
                 int current_fd = events[i].data.fd; 
                 uint32_t event_type = events[i].events;
-
+                if(current_fd==g_event_fd&&(event_type&EPOLLIN)){//检查是否是eventfd上的EPOLLIN事件
+                    uint64_t value;
+                    ssize_t n=read(g_event_fd,&value,sizeof(value));//读取eventfd
+                    if(n<0&&(errno!=EAGAIN&&errno!=EWOULDBLOCK)){
+                        std::cerr << "Error reading eventfd: " << strerror(errno) << std::endl;
+                        continue;
+                    }
+                    if(n<=0)continue;//未读到有效数据
+                    std::queue<EpollTask>local_queue;//交换任务队列
+                    {
+                        std::lock_guard<std::mutex>lock(g_task_mutex);
+                        std::swap(local_queue,g_task_queue);
+                    }
+                    while(!local_queue.empty()){
+                        EpollTask task=local_queue.front();
+                        local_queue.pop();
+                        if(connections.count(task.fd)>0){
+                            epoll_poller.mod_fd(task.fd,task.events);
+                        }
+                        
+                    }
+                    continue;
+                }
                 // 检查是否是监听 Socket 上的 EPOLLIN 事件 (新连接)
                 if (current_fd == listen_socket.fd() && (event_type & EPOLLIN)) {
                     
@@ -203,6 +250,9 @@ int main() {
     } catch (const std::exception& e) {
         std::cerr << "An unexpected C++ Error occurred: " << e.what() << std::endl;
         return 1;
+    }
+    if(g_event_fd>=0){
+        ::close(g_event_fd);
     }
     return 0; 
 }
