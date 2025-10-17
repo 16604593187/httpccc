@@ -72,10 +72,16 @@ public:
     void handleRead();
     void handleWrite();
     void handleClose();
+    void handleProcess();
     int fd() const {return _clientFd;}
 
     //超时处理
     void updateActiveTime(){_lastActiveTime=Clock::now();}
     Clock::time_point getLastActiveTime()const{return _lastActiveTime;}
+
+    //新增辅助函数
+    size_t inputReadableBytes() const { 
+        return _inBuffer.readableBytes(); 
+    }
 };
 #endif

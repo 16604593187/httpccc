@@ -25,6 +25,11 @@ int main() {
     Epoll epoll_poller; 
     std::map<int, std::shared_ptr<HttpConnection>> connections; 
 
+
+    //线程池定义
+    size_t num_cpus = std::thread::hardware_concurrency();
+    size_t pool_size = num_cpus > 0 ? num_cpus : 4; // 至少4个线程
+    ThreadPool thread_pool(pool_size); // 【新增】创建线程池实例
     // 【新增】统一的连接关闭和移除逻辑
     auto epoll_mod_cb = [&](int fd, uint32_t events) {
         epoll_poller.mod_fd(fd, events);
@@ -156,6 +161,13 @@ int main() {
                     // 1. 事件分发
                     if (event_type & EPOLLIN) {
                         conn->handleRead();
+                        if (conn->fd() >= 0 && conn->inputReadableBytes() > 0) {
+                            // 【核心修改】将 CPU 密集型任务提交给线程池
+                            // 必须捕获 shared_ptr<HttpConnection>，确保对象在任务执行期间存活
+                            thread_pool.enqueue([conn](){ 
+                                conn->handleProcess(); 
+                            });
+                        }
                     }
                     if (event_type & EPOLLOUT) {
                         conn->handleWrite();

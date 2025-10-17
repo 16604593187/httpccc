@@ -248,32 +248,37 @@ void HttpConnection::closeConnection(){
         _fileFd=-1;
     }
 }
+void HttpConnection::handleProcess(){
+    bool parse_result=true;
+
+    while(_httpRPS!=HttpRequestParseState::kGotAll&& _inBuffer.readableBytes() > 0){
+        //使用状态机解析_inBuffer中的数据
+        if(!parseRequest()){//解析失败
+            _httpRPS=HttpRequestParseState::kParseError;
+            parse_result=false;
+            break;
+        }  
+    }
+    if(_httpRPS==HttpRequestParseState::kGotAll){//完整的协议请求已解析
+            processRequest();
+    }
+    if(_httpRPS==HttpRequestParseState::kParseError){//解析失败，关闭连接
+        std::cerr << "Request parse error on FD " << _clientFd << std::endl;
+        handleClose();
+        return ;
+    }
+    if(_outBuffer.readableBytes()>0||_fileFd>=0){
+        updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
+    }else{
+        updateEvents(EPOLLIN | EPOLLET);
+    }
+}
 void HttpConnection::handleRead(){
     int savedErrno=0;
     ssize_t n=_inBuffer.readFd(_clientFd,&savedErrno);
     if(n>0){
         updateActiveTime();
-        bool parse_result=true;
-
-        while(_httpRPS!=HttpRequestParseState::kGotAll&& _inBuffer.readableBytes() > 0){
-            //使用状态机解析_inBuffer中的数据
-            if(!parseRequest()){//解析失败
-                _httpRPS=HttpRequestParseState::kParseError;
-                parse_result=false;
-                break;
-            }  
-        }
-        if(_httpRPS==HttpRequestParseState::kGotAll){//完整的协议请求已解析
-                processRequest();
-        }
-        if(_httpRPS==HttpRequestParseState::kParseError){//解析失败，关闭连接
-            std::cerr << "Request parse error on FD " << _clientFd << std::endl;
-            handleClose();
-            return ;
-        }
-        if(_outBuffer.readableBytes()>0){
-            updateEvents(EPOLLIN | EPOLLOUT | EPOLLET);
-        }
+        return;
     }else if(n==0){
         handleClose();
     }else{
