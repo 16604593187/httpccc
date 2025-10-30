@@ -1,22 +1,22 @@
-#ifndef HTTPCCC_EPOLL_H // 【新增：检查是否已定义】
-#define HTTPCCC_EPOLL_H // 【新增：如果未定义，则定义】
+#ifndef HTTPCCC_EPOLL_H 
+#define HTTPCCC_EPOLL_H 
 #include<sys/epoll.h>
 #include<unistd.h>
 #include<vector>
 class Epoll{
 private:
-    int _epollfd=-1;//存储epoll实例的文件描述符
-    std::vector<epoll_event> _events;//存储epoll的就绪事件数组
-    static const int MAX_EVENTS=1024;//限定_events最大值
+    int _epollfd=-1;
+    std::vector<epoll_event> _events;
+    static const int MAX_EVENTS=1024;
 public:
     Epoll();
     Epoll(const Epoll&)=delete;
     Epoll &operator=(const Epoll&)=delete;
     ~Epoll();
-    void add_fd(int fd,uint32_t events);//将socket注册到epoll实例中
-    int wait(int timeout_ms=-1);//返回等待确认的事件个数
+    void add_fd(int fd,uint32_t events);
+    int wait(int timeout_ms=-1);
     const std::vector<epoll_event>& get_events() const { return _events; }
-    void mod_fd(int fd,uint32_t events);//事件切换
-    void del_fd(int fd);//描述符移除
+    void mod_fd(int fd,uint32_t events);
+    void del_fd(int fd);
 };
 #endif

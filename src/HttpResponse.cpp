@@ -13,13 +13,12 @@ static const std::unordered_map<int, const char*> s_status_messages = {
     {501, "Not Implemented"}
 };
 const char* HttpResponse::getStatusMessage(int code){
-    // 使用更标准的静态变量命名 s_status_messages
     auto it = s_status_messages.find(code); 
     
     if (it != s_status_messages.end()) {
-        return it->second; // 找到了，返回消息字符串
+        return it->second; //返回消息字符串
     } else {
-        return "Unknown Status"; // 未找到，返回默认消息
+        return "Unknown Status"; //返回默认消息
     }
 }
 void HttpResponse::setStatusCode(int code,const std::string& message){

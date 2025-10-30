@@ -12,8 +12,8 @@ size_t Buffer::writableBytes() const{
     return _buffer.size()-_writeIndex;
 }
 void Buffer::ensureWritableBytes(size_t len){
-    if(writableBytes()>=len)return;//判断逻辑1
-    if(writableBytes()+prependableBytes()>=len){//判断逻辑2
+    if(writableBytes()>=len)return;
+    if(writableBytes()+prependableBytes()>=len){
         char* read_ptr = begin() + _readIndex;
         char* write_ptr=begin()+_writeIndex;
         char* dest_ptr=begin();
@@ -22,11 +22,12 @@ void Buffer::ensureWritableBytes(size_t len){
         _readIndex=0;
         _writeIndex=readable;
     }
-    else{//判断逻辑3
+    else{
         size_t _capacity=_writeIndex+len;
         _buffer.resize(_capacity);
     }
 }
+//调用ensureWritableBytes并且更新_writeIndex
 void Buffer::append(const char* data,size_t len){
     ensureWritableBytes(len);
     char* target=begin()+_writeIndex;
